@@ -102,8 +102,12 @@ const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 
 const todayISO = () => new Date().toISOString().slice(0, 10);
 const fmt = (n) => Number(n || 0).toLocaleString("en-US");
 const positiveNumber = (value) => Number.isFinite(Number(value)) && Number(value) > 0;
+const nonNegativeNumber = (value) => Number.isFinite(Number(value)) && Number(value) >= 0;
 const monthKey = (iso) => (iso || "").slice(0, 7);
+const normalizeName = (value) => String(value || "").trim().replace(/\s+/g, " ").toLocaleLowerCase("ar");
+const hasDuplicateName = (items, name, currentId = null) => (items || []).some((item) => item.id !== currentId && normalizeName(item.name) === normalizeName(name));
 const contactBalance = (c) => (c.transactions || []).reduce((s, t) => s + (t.type === "debit" ? Number(t.amount) : -Number(t.amount)), 0);
+const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[ch]));
 
 const PRODUCT_TYPES = ["تكس", "سيليكات", "كلاهما"];
 const STATUSES = ["جديد", "قيد التنفيذ", "مكتمل"];
@@ -147,10 +151,29 @@ function EmptyState({ icon, title, sub }) {
     </div>
   );
 }
+function notify(message, type = "error") {
+  window.dispatchEvent(new CustomEvent("factory:toast", { detail: { message, type } }));
+}
+function ToastHost() {
+  const [toasts, setToasts] = useState([]);
+  useEffect(() => {
+    const onToast = (event) => {
+      const id = uid();
+      setToasts((prev) => [...prev, { id, message: event.detail?.message || "حدث أمر غير متوقع", type: event.detail?.type || "error" }]);
+      window.setTimeout(() => setToasts((prev) => prev.filter((toast) => toast.id !== id)), 4200);
+    };
+    window.addEventListener("factory:toast", onToast);
+    return () => window.removeEventListener("factory:toast", onToast);
+  }, []);
+  return <div className="fixed top-4 left-4 right-4 z-[100] flex flex-col items-center gap-2 pointer-events-none" dir="rtl">
+    {toasts.map((toast) => <div key={toast.id} role="status" className="pointer-events-auto w-full max-w-md rounded-xl border px-4 py-3 text-sm shadow-lg" style={{ background: toast.type === "success" ? "var(--good-bg)" : "var(--warn-bg)", borderColor: toast.type === "success" ? "var(--good-border)" : "var(--warn-border)", color: toast.type === "success" ? "#4B6350" : "#A34632" }}>{toast.message}</div>)}
+  </div>;
+}
+
 function FieldLabel({ children }) { return <label className="text-xs mb-1 block" style={{ color: "var(--text-muted)" }}>{children}</label>; }
 function TextInput(props) {
-  const { className, ...rest } = props;
-  return <input {...rest} className={"w-full rounded-lg border px-3 py-2 text-sm outline-none transition " + (className || "")} style={{ background: "var(--input-bg)", borderColor: "var(--card-border)", color: "var(--text-strong)" }} />;
+  const { className, type, min, ...rest } = props;
+  return <input {...rest} type={type} min={type === "number" ? (min ?? 0) : min} className={"w-full rounded-lg border px-3 py-2 text-sm outline-none transition " + (className || "")} style={{ background: "var(--input-bg)", borderColor: "var(--card-border)", color: "var(--text-strong)" }} />;
 }
 function Select(props) {
   const { className, children, ...rest } = props;
@@ -252,6 +275,12 @@ function useFactoryData(organizationId) {
     if (supabaseClient && organizationId) {
       const { error: upsertError } = await supabaseClient.from("app_records").upsert({ organization_id: organizationId, collection: name, id: docObj.id, payload: docObj }, { onConflict: "organization_id,collection,id" });
       if (upsertError) { setError(upsertError.message); return; }
+      setData((prev) => {
+        const list = prev[name] || [];
+        const idx = list.findIndex((d) => d.id === docObj.id);
+        const next = idx === -1 ? [docObj, ...list] : list.map((d) => (d.id === docObj.id ? docObj : d));
+        return { ...prev, [name]: next };
+      });
     } else {
       setData((prev) => {
         const list = prev[name] || [];
@@ -265,7 +294,8 @@ function useFactoryData(organizationId) {
   const remove = async (name, id) => {
     if (supabaseClient && organizationId) {
       const { error: deleteError } = await supabaseClient.from("app_records").delete().eq("organization_id", organizationId).eq("collection", name).eq("id", id);
-      if (deleteError) setError(deleteError.message);
+      if (deleteError) { setError(deleteError.message); return; }
+      setData((prev) => ({ ...prev, [name]: (prev[name] || []).filter((d) => d.id !== id) }));
     } else {
       setData((prev) => { const next = (prev[name] || []).filter((d) => d.id !== id); saveLocal(name, next); return { ...prev, [name]: next }; });
     }
@@ -275,7 +305,7 @@ function useFactoryData(organizationId) {
 }
 
 async function exportBackup(downloadsNs, data) {
-  if (!window.XLSX) { alert("تعذر تحميل مكتبة التصدير، حاول تحديث الصفحة."); return; }
+  if (!window.XLSX) { notify("تعذر تحميل مكتبة التصدير، حاول تحديث الصفحة."); return; }
   const wb = XLSX.utils.book_new();
   const sheets = {
     "المشاريع": data.projects.map((p) => ({ الزبون: p.customerName, الهاتف: p.phone, الموقع: p.location, النوع: p.productType, الحالة: p.status, "تاريخ الإنشاء": p.dateCreated, ملاحظات: p.notes })),
@@ -626,7 +656,7 @@ function CustomerPicker({ customers, customerId, customerName, onSelect, onCreat
   };
 
   const confirmNew = () => {
-    if (!newName.trim()) return;
+    if (!newName.trim() || hasDuplicateName(customers, newName)) { notify("اسم العميل موجود مسبقًا أو غير صالح."); return; }
     const c = { id: uid(), name: newName.trim(), phone: newPhone.trim(), notes: "", transactions: [] };
     onCreateNew(c);
     setAddingNew(false);
@@ -662,11 +692,12 @@ function NewProjectModal({ onClose, onCreate, customers, upsert }) {
   const [location, setLocation] = useState("");
   const [productType, setProductType] = useState("تكس");
   const [notes, setNotes] = useState("");
+  const [createdCustomer, setCreatedCustomer] = useState(null);
 
-  const handleCreateCustomer = (c) => { upsert("customers", c); setCustomerId(c.id); if (!phone) setPhone(c.phone || ""); };
+  const handleCreateCustomer = (c) => { upsert("customers", c); setCreatedCustomer(c); setCustomerId(c.id); if (!phone) setPhone(c.phone || ""); };
 
   const submit = () => {
-    const customer = customers.find((c) => c.id === customerId);
+    const customer = customers.find((c) => c.id === customerId) || createdCustomer;
     if (!customer) return;
     onCreate({ id: uid(), customerId: customer.id, customerName: customer.name, phone: (phone.trim() || customer.phone || ""), location: location.trim(), productType, status: "جديد", dateCreated: todayISO(), notes: notes.trim(), items: [], measurements: [], completedAt: null });
   };
@@ -685,6 +716,526 @@ function NewProjectModal({ onClose, onCreate, customers, upsert }) {
 }
 
 // ---------- Project detail ----------
+function printProjectInvoice(project) {
+  const measurements = project.measurements || [];
+
+  const rows = measurements.flatMap((measurement) =>
+    (measurement.entries || []).map((entry) => ({
+      date: measurement.date || "",
+      label: entry.label || "",
+      quantity: Number(entry.quantity || 0),
+      unitPrice: Number(entry.unitPrice || 0),
+      total: Number(entry.total || 0),
+    }))
+  );
+
+  const total = rows.reduce((sum, row) => sum + row.total, 0);
+
+  const invoiceNumber =
+    String(project.id || "").replace(/[^0-9]/g, "").slice(-6) || "000001";
+
+  const projectDate = project.dateCreated || todayISO();
+
+  const rowsHtml = rows.length
+    ? rows
+        .map(
+          (row, index) => `
+            <tr>
+              <td>${index + 1}</td>
+              <td class="item-name">${escapeHtml(row.label)}</td>
+              <td>${fmt(row.quantity)}</td>
+              <td>${fmt(row.unitPrice)}</td>
+              <td>${fmt(row.total)}</td>
+            </tr>
+          `
+        )
+        .join("")
+    : `
+        <tr>
+          <td colspan="5" class="empty-row">
+            لا توجد قياسات نهائية مسجلة
+          </td>
+        </tr>
+      `;
+
+  const printWindow = window.open(
+    "",
+    "_blank",
+    "width=900,height=1100"
+  );
+
+  if (!printWindow) {
+    notify("يرجى السماح بالنوافذ المنبثقة لطباعة الفاتورة.");
+    return;
+  }
+
+  const printHtml = `
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <title>فاتورة نهائية - ${escapeHtml(project.customerName)}</title>
+
+  <style>
+    @page {
+      size: A4 portrait;
+      margin: 10mm;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: #ffffff;
+      color: #111111;
+      font-family: Arial, Tahoma, sans-serif;
+      direction: rtl;
+      font-size: 13px;
+    }
+
+    .invoice-page {
+      width: 100%;
+      min-height: 270mm;
+      padding: 8mm 7mm 6mm;
+      position: relative;
+    }
+
+    .company-header {
+      display: grid;
+      grid-template-columns: 1fr 1.35fr 1fr;
+      align-items: start;
+      gap: 12px;
+      border-bottom: 2px solid #222;
+      padding-bottom: 10px;
+    }
+
+    .header-side {
+      font-size: 12px;
+      line-height: 1.8;
+    }
+
+    .header-side.left {
+      text-align: left;
+    }
+
+    .header-center {
+      text-align: center;
+      font-weight: bold;
+      line-height: 1.75;
+    }
+
+    .company-name {
+      font-size: 21px;
+      font-weight: 900;
+      white-space: nowrap;
+    }
+
+    .company-subtitle {
+      font-size: 13px;
+      font-weight: bold;
+    }
+
+    .location {
+      font-size: 12px;
+      margin-top: 2px;
+    }
+
+    .document-info {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 10px;
+      margin-top: 10px;
+      font-size: 12px;
+      font-weight: bold;
+    }
+
+    .document-info div {
+      border-bottom: 1px solid #777;
+      padding: 5px 4px;
+      min-height: 28px;
+    }
+
+    .document-info .label {
+      display: inline-block;
+      margin-left: 6px;
+      color: #333;
+    }
+
+    .document-title {
+      margin: 12px 0 10px;
+      background: #555;
+      color: #fff;
+      text-align: center;
+      padding: 8px 10px;
+      font-size: 18px;
+      font-weight: bold;
+      letter-spacing: 0.3px;
+    }
+
+    .customer-box {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      border: 1.5px solid #222;
+      border-radius: 9px;
+      overflow: hidden;
+      margin-bottom: 16px;
+    }
+
+    .customer-cell {
+      min-height: 78px;
+      padding: 10px 14px;
+      line-height: 2;
+      font-size: 13px;
+    }
+
+    .customer-cell:first-child {
+      border-left: 1px solid #444;
+    }
+
+    .customer-line {
+      display: flex;
+      justify-content: space-between;
+      gap: 14px;
+      border-bottom: 1px dotted #999;
+    }
+
+    .customer-line:last-child {
+      border-bottom: 0;
+    }
+
+    .customer-label {
+      font-weight: bold;
+      white-space: nowrap;
+    }
+
+    .customer-value {
+      flex: 1;
+      text-align: right;
+      font-weight: bold;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+      font-size: 12px;
+    }
+
+    th,
+    td {
+      border: 1px solid #222;
+      padding: 8px 5px;
+      text-align: center;
+      vertical-align: middle;
+    }
+
+    th {
+      background: #d9d9d9;
+      font-weight: bold;
+      height: 34px;
+    }
+
+    th:nth-child(1) {
+      width: 8%;
+    }
+
+    th:nth-child(2) {
+      width: 43%;
+    }
+
+    th:nth-child(3) {
+      width: 15%;
+    }
+
+    th:nth-child(4) {
+      width: 15%;
+    }
+
+    th:nth-child(5) {
+      width: 19%;
+    }
+
+    td {
+      height: 34px;
+    }
+
+    .item-name {
+      text-align: right;
+      padding-right: 10px;
+      word-break: break-word;
+    }
+
+    .empty-row {
+      height: 55px;
+      color: #555;
+    }
+
+    .summary-box {
+      border: 1.5px solid #222;
+      border-radius: 9px;
+      margin-top: 10px;
+      padding: 13px 16px;
+      min-height: 92px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      font-size: 13px;
+    }
+
+    .summary-right {
+      line-height: 2;
+    }
+
+    .summary-right strong {
+      display: inline-block;
+      min-width: 110px;
+    }
+
+    .grand-total {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid #222;
+      padding-bottom: 9px;
+      font-size: 17px;
+      font-weight: 900;
+    }
+
+    .grand-total-value {
+      font-size: 22px;
+      direction: ltr;
+    }
+
+    .signature-area {
+      margin-top: 12px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 35px;
+      text-align: center;
+      font-size: 12px;
+    }
+
+    .signature-line {
+      margin-top: 27px;
+      border-top: 1px solid #222;
+      padding-top: 6px;
+    }
+
+    .stamp {
+      width: 95px;
+      height: 95px;
+      border: 2px solid #777;
+      border-radius: 50%;
+      margin: 12px auto 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #777;
+      font-size: 11px;
+      text-align: center;
+      line-height: 1.4;
+    }
+
+    .footer {
+      position: absolute;
+      bottom: 5mm;
+      left: 7mm;
+      right: 7mm;
+      border-top: 1px solid #222;
+      padding-top: 7px;
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      font-weight: bold;
+    }
+
+    @media print {
+      body {
+        background: #fff;
+      }
+
+      .invoice-page {
+        min-height: 270mm;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <main class="invoice-page">
+
+    <header class="company-header">
+      <div class="header-side">
+        <div>العنوان:</div>
+        <div>ليبيا - طرابلس</div>
+        <div>عين زارة - بجانب شيل فرحات</div>
+      </div>
+
+      <div class="header-center">
+        <div class="company-name">شركة الشرق الكبرى</div>
+        <div class="company-subtitle">
+          لأعمال القياس والخدمات التنفيذية
+        </div>
+        <div class="location">
+          ليبيا - طرابلس - عين زارة - بجانب شيل فرحات
+        </div>
+      </div>
+
+      <div class="header-side left">
+        <div>التاريخ: ${escapeHtml(projectDate)}</div>
+        <div>رقم الفاتورة: ${invoiceNumber}</div>
+        <div>نوع المستند: فاتورة نهائية</div>
+      </div>
+    </header>
+
+    <section class="document-info">
+      <div>
+        <span class="label">التاريخ:</span>
+        ${escapeHtml(projectDate)}
+      </div>
+
+      <div>
+        <span class="label">رقم الفاتورة:</span>
+        ${invoiceNumber}
+      </div>
+
+      <div>
+        <span class="label">الموقع:</span>
+        عين زارة
+      </div>
+    </section>
+
+    <div class="document-title">
+      فاتورة القياس النهائي
+    </div>
+
+    <section class="customer-box">
+      <div class="customer-cell">
+        <div class="customer-line">
+          <span class="customer-label">الزبون</span>
+          <span class="customer-value">
+            ${escapeHtml(project.customerName || "غير محدد")}
+          </span>
+        </div>
+
+        <div class="customer-line">
+          <span class="customer-label">الهاتف</span>
+          <span class="customer-value">
+            ${escapeHtml(project.phone || "غير محدد")}
+          </span>
+        </div>
+      </div>
+
+      <div class="customer-cell">
+        <div class="customer-line">
+          <span class="customer-label">العنوان</span>
+          <span class="customer-value">
+            ${escapeHtml(project.location || "غير محدد")}
+          </span>
+        </div>
+
+        <div class="customer-line">
+          <span class="customer-label">نوع المنتج</span>
+          <span class="customer-value">
+            ${escapeHtml(project.productType || "غير محدد")}
+          </span>
+        </div>
+      </div>
+    </section>
+
+    <table>
+      <thead>
+        <tr>
+          <th>ت</th>
+          <th>اسم بند القياس النهائي</th>
+          <th>الكمية</th>
+          <th>سعر الوحدة</th>
+          <th>الإجمالي</th>
+        </tr>
+      </thead>
+
+      <tbody>
+        ${rowsHtml}
+      </tbody>
+    </table>
+
+    <section class="summary-box">
+      <div class="summary-right">
+        <div>
+          <strong>الإجمالي كتابةً:</strong>
+          ${escapeHtml(fmt(total))} دينار ليبي فقط لا غير
+        </div>
+
+        <div>
+          <strong>طريقة السداد:</strong>
+          حسب الاتفاق
+        </div>
+
+        <div>
+          <strong>ملاحظات:</strong>
+          ${escapeHtml(project.notes || "لا توجد ملاحظات")}
+        </div>
+      </div>
+
+      <div>
+        <div class="grand-total">
+          <span>الإجمالي</span>
+          <span class="grand-total-value">${fmt(total)}</span>
+        </div>
+
+        <div class="signature-area">
+          <div>
+            إعداد
+            <div class="signature-line">التوقيع</div>
+          </div>
+
+          <div>
+            اعتماد
+            <div class="signature-line">التوقيع</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div class="stamp">
+      ختم  
+
+      شركة الشرق الكبرى
+    </div>
+
+    <footer class="footer">
+      <span>شركة الشرق الكبرى</span>
+      <span>ليبيا - طرابلس - عين زارة - بجانب شيل فرحات</span>
+      <span>صفحة 1</span>
+    </footer>
+
+  </main>
+</body>
+</html>
+`;
+
+  printWindow.document.open();
+  printWindow.document.write(printHtml);
+  printWindow.document.close();
+
+  printWindow.onload = () => {
+    printWindow.focus();
+    printWindow.print();
+  };
+
+  window.setTimeout(() => {
+    try {
+      printWindow.focus();
+      printWindow.print();
+    } catch (error) {
+      console.error("Print failed:", error);
+    }
+  }, 700);
+}
+
+
 function ProjectDetail({ project, onClose, onSave, onDelete, addIncome, customers, upsertCustomer }) {
   const [sub, setSub] = useState("info");
   const [local, setLocal] = useState(project);
@@ -724,6 +1275,9 @@ function ProjectDetail({ project, onClose, onSave, onDelete, addIncome, customer
           </div>
           <div><FieldLabel>ملاحظات</FieldLabel><textarea value={local.notes} onChange={(e) => update({ notes: e.target.value })} rows={2} className="w-full rounded-lg border px-3 py-2 text-sm outline-none" style={{ background: "var(--input-bg)", borderColor: "var(--card-border)", color: "var(--text-strong)" }} /></div>
           <div className="rounded-xl p-3 flex items-center justify-between text-sm mt-1" style={{ background: "var(--divider)" }}><span style={{ color: "var(--text-muted)" }}>إجمالي المكاييل المسجّلة لهذا المشروع</span><span className="font-bold" style={{ color: "var(--text-strong)" }}>{fmt(totalMeasured)}</span></div>
+          <div className="flex gap-2">
+            <GhostButton onClick={() => printProjectInvoice(local)}><Icon name="download" size={14} /> طباعة فاتورة القياس</GhostButton>
+          </div>
           {local.status !== "مكتمل" && <PrimaryButton full onClick={() => update({ status: "مكتمل", completedAt: todayISO() })}><Icon name="check" size={16} /> إنهاء المشروع يدويًا</PrimaryButton>}
           {local.status === "مكتمل" && <RecordIncomeInline project={local} onAdd={(entry) => addIncome(entry)} />}
           <div className="pt-3 border-t flex justify-end" style={{ borderColor: "var(--card-border)" }}>
@@ -757,7 +1311,7 @@ function ProjectItems({ project, update }) {
   const [pendingDelete, setPendingDelete] = useState(null);
   const items = project.items || [];
   const addItem = () => {
-    if (!name.trim() || !quantity) return;
+    if (!name.trim() || !positiveNumber(quantity)) { notify("أدخل كمية موجبة."); return; }
     const entry = { id: uid(), date: todayISO(), direction, name: name.trim(), quantity: Number(quantity), unit };
     const patch = { items: [entry, ...items] };
     if (project.status === "جديد") patch.status = "قيد التنفيذ";
@@ -807,9 +1361,9 @@ function ProjectMeasurements({ project, update }) {
   const removeRow = (idx) => setEntries((prev) => prev.filter((_, i) => i !== idx));
   const sum = entries.reduce((s, e) => s + Number(e.total || 0), 0);
   const submit = () => {
-    if (!workerName.trim()) return;
-    const cleanEntries = entries.filter((e) => e.label.trim() && e.total).map((e) => ({ ...e, quantity: Number(e.quantity || 0), unitPrice: Number(e.unitPrice || 0), total: Number(e.total) }));
-    if (cleanEntries.length === 0) return;
+    if (!workerName.trim()) { notify("أدخل اسم العامل."); return; }
+    const cleanEntries = entries.filter((e) => e.label.trim() && positiveNumber(e.total) && nonNegativeNumber(e.quantity || 0) && nonNegativeNumber(e.unitPrice || 0)).map((e) => ({ ...e, quantity: Number(e.quantity || 0), unitPrice: Number(e.unitPrice || 0), total: Number(e.total) }));
+    if (cleanEntries.length === 0) { notify("أدخل بنود قياس صحيحة وبقيم غير سالبة."); return; }
     const record = { id: uid(), date: todayISO(), workerName: workerName.trim(), entries: cleanEntries, totalAmount: cleanEntries.reduce((s, e) => s + e.total, 0) };
     const patch = { measurements: [record, ...measurements] };
     if (project.status !== "مكتمل") { patch.status = "مكتمل"; patch.completedAt = project.completedAt || todayISO(); }
@@ -941,7 +1495,7 @@ function AddInvoiceForm({ onAdd, projects, suppliers, upsert }) {
   const [markAsDebt, setMarkAsDebt] = useState(false);
   const [items, setItems] = useState([{ name: "", quantity: "", unit: "قطعة", unitPrice: "", total: "" }]);
 
-  const setItem = (idx, patch) => setItems((prev) => prev.map((it, i) => { if (i !== idx) return it; const next = { ...it, ...patch }; if (next.quantity && next.unitPrice) next.total = String(Number(next.quantity) * Number(next.unitPrice)); return next; }));
+  const setItem = (idx, patch) => setItems((prev) => prev.map((it, i) => { if (i !== idx) return it; const next = { ...it, ...patch }; if (next.quantity && next.unitPrice && nonNegativeNumber(next.quantity) && nonNegativeNumber(next.unitPrice)) next.total = String(Number(next.quantity) * Number(next.unitPrice)); return next; }));
   const addRow = () => setItems((prev) => [...prev, { name: "", quantity: "", unit: "قطعة", unitPrice: "", total: "" }]);
   const removeRow = (idx) => setItems((prev) => prev.filter((_, i) => i !== idx));
   const itemsTotal = items.reduce((s, it) => s + Number(it.total || 0), 0);
@@ -953,8 +1507,8 @@ function AddInvoiceForm({ onAdd, projects, suppliers, upsert }) {
   }, [supplierId]);
 
   const submit = () => {
-    if (!positiveNumber(effectiveAmount)) return;
-    const cleanItems = items.filter((it) => it.name.trim() && it.total).map((it) => ({ name: it.name.trim(), quantity: Number(it.quantity || 0), unit: it.unit, unitPrice: Number(it.unitPrice || 0), total: Number(it.total) }));
+    if (!positiveNumber(effectiveAmount) || Number(effectiveAmount) < 0) { notify("مبلغ الفاتورة يجب أن يكون موجبًا."); return; }
+    const cleanItems = items.filter((it) => it.name.trim() && positiveNumber(it.total) && nonNegativeNumber(it.quantity || 0) && nonNegativeNumber(it.unitPrice || 0)).map((it) => ({ name: it.name.trim(), quantity: Number(it.quantity || 0), unit: it.unit, unitPrice: Number(it.unitPrice || 0), total: Number(it.total) }));
     const debtTransactionId = markAsDebt && supplierId ? uid() : null;
     const inv = {
       id: uid(), invoiceNumber: invoiceNumber.trim(), type, supplierId: supplierId || null, supplierName: supplierName.trim(),
@@ -1066,7 +1620,7 @@ function AddExpenseForm({ onAdd }) {
   const [amount, setAmount] = useState("");
   const [date, setDate] = useState(todayISO());
   const [description, setDescription] = useState("");
-  const submit = () => { if (!positiveNumber(amount)) return; onAdd({ id: uid(), type, amount: Number(amount), date, description: description.trim() }); };
+  const submit = () => { if (!positiveNumber(amount) || Number(amount) < 0) { notify("المبلغ يجب أن يكون موجبًا."); return; } onAdd({ id: uid(), type, amount: Number(amount), date, description: description.trim() }); };
   return (
     <div className="flex flex-col gap-3">
       <div><FieldLabel>نوع المصروف</FieldLabel><Select value={type} onChange={(e) => setType(e.target.value)}>{EXPENSE_TYPES.map((t) => <option key={t}>{t}</option>)}</Select></div>
@@ -1082,7 +1636,7 @@ function AddIncomeForm({ onAdd, projects }) {
   const [amount, setAmount] = useState("");
   const [date, setDate] = useState(todayISO());
   const [description, setDescription] = useState("");
-  const submit = () => { if (!positiveNumber(amount)) return; const proj = projects.find((p) => p.id === projectId); onAdd({ id: uid(), projectId: projectId || null, customerName: proj ? proj.customerName : customerName.trim(), amount: Number(amount), date, description: description.trim() }); };
+  const submit = () => { if (!positiveNumber(amount) || Number(amount) < 0) { notify("المبلغ يجب أن يكون موجبًا."); return; } const proj = projects.find((p) => p.id === projectId); onAdd({ id: uid(), projectId: projectId || null, customerName: proj ? proj.customerName : customerName.trim(), amount: Number(amount), date, description: description.trim() }); };
   return (
     <div className="flex flex-col gap-3">
       <div><FieldLabel>المشروع (اختياري)</FieldLabel><Select value={projectId} onChange={(e) => setProjectId(e.target.value)}><option value="">بدون ربط بمشروع</option>{projects.map((p) => <option key={p.id} value={p.id}>{p.customerName} — {p.location}</option>)}</Select></div>
@@ -1150,17 +1704,21 @@ function ContactsList({ kind, label, icon, collection, data, upsert, remove, pro
           })}
         </div>
       )}
-      {showAdd && <Modal title={`إضافة ${label.replace(/ون$|اء$/, "")}`} onClose={() => setShowAdd(false)}><AddContactForm onAdd={(c) => { upsert(collection, c); setShowAdd(false); }} /></Modal>}
+      {showAdd && <Modal title={`إضافة ${label.replace(/ون$|اء$/, "")}`} onClose={() => setShowAdd(false)}><AddContactForm existing={data} onAdd={(c) => { upsert(collection, c); setShowAdd(false); }} /></Modal>}
       {open && <ContactDetail contact={open} label={label} icon={icon} onClose={() => setOpenId(null)} onSave={(c) => upsert(collection, c)} onDelete={() => { remove(collection, open.id); setOpenId(null); }} relatedProjects={relatedProjects} onOpenProject={onOpenProject} />}
     </div>
   );
 }
 
-function AddContactForm({ onAdd }) {
+function AddContactForm({ onAdd, existing = [] }) {
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [notes, setNotes] = useState("");
-  const submit = () => { if (!name.trim()) return; onAdd({ id: uid(), name: name.trim(), phone: phone.trim(), notes: notes.trim(), transactions: [] }); };
+  const submit = () => {
+    if (!name.trim()) return;
+    if (hasDuplicateName(existing, name)) { notify("هذا الاسم مسجل مسبقًا."); return; }
+    onAdd({ id: uid(), name: name.trim(), phone: phone.trim(), notes: notes.trim(), transactions: [] });
+  };
   return (
     <div className="flex flex-col gap-3">
       <div><FieldLabel>الاسم</FieldLabel><TextInput value={name} onChange={(e) => setName(e.target.value)} /></div>
@@ -1184,7 +1742,7 @@ function ContactDetail({ contact, label, icon, onClose, onSave, onDelete, relate
   const transactions = local.transactions || [];
 
   const addTx = () => {
-    if (!positiveNumber(txAmount)) return;
+    if (!positiveNumber(txAmount) || Number(txAmount) < 0) { notify("مبلغ الحركة يجب أن يكون موجبًا."); return; }
     const tx = { id: uid(), date: todayISO(), type: txType, amount: Number(txAmount), note: txNote.trim() };
     update({ transactions: [tx, ...transactions] });
     setTxAmount(""); setTxNote("");
@@ -1351,16 +1909,22 @@ function ReportsTab({ month, setMonth, projects, invoices, expenses, income, att
   const invoiceByType = INVOICE_TYPES.map((t) => ({ label: t, total: mInvoices.filter((i) => i.type === t).reduce((s, i) => s + Number(i.amount || 0), 0) })).filter((r) => r.total > 0);
 
   const monthAttendance = attendance.filter((a) => monthKey(a.date) === month);
-  const attSummary = workers.map((w) => ({ name: w.name, present: monthAttendance.filter((a) => a.workerId === w.id && a.status === "حاضر").length })).filter((s) => s.present > 0);
+  const attSummary = workers.map((w) => ({
+    name: w.name,
+    present: monthAttendance.filter((a) => a.workerId === w.id && a.status === "حاضر").length,
+    half: monthAttendance.filter((a) => a.workerId === w.id && a.status === "نصف يوم").length,
+    absent: monthAttendance.filter((a) => a.workerId === w.id && a.status === "غائب").length,
+  })).filter((s) => s.present + s.half + s.absent > 0);
 
   const exportMonth = async () => {
-    if (!window.XLSX) { alert("ميزة التصدير غير متاحة هنا حاليًا."); return; }
+    if (!window.XLSX) { notify("ميزة التصدير غير متاحة هنا حاليًا."); return; }
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([{ الشهر: month, الواردات: totalIncome, المصاريف: totalExpenses, الفواتير: totalInvoices, الصافي: net }]), "ملخص");
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(mIncome.map((x) => ({ الزبون: x.customerName, المبلغ: x.amount, التاريخ: x.date }))), "الواردات");
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(mExpenses.map((x) => ({ النوع: x.type, المبلغ: x.amount, التاريخ: x.date }))), "المصاريف");
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(mInvoices.map((x) => ({ النوع: x.type, المورد: x.supplierName, المبلغ: x.amount, التاريخ: x.date }))), "الفواتير");
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(completedProjects.map((p) => ({ الزبون: p.customerName, الموقع: p.location, الإجمالي: (p.measurements || []).reduce((s, m) => s + Number(m.totalAmount || 0), 0) }))), "مشاريع مكتملة");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(completedProjects.map((p) => ({ الزبون: p.customerName, الموقع: p.location, "تاريخ المشروع": p.dateCreated, "تاريخ الإكمال": p.completedAt, الإجمالي: (p.measurements || []).reduce((s, m) => s + Number(m.totalAmount || 0), 0) }))), "مشاريع مكتملة");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(workers.map((w) => { const records = monthAttendance.filter((a) => a.workerId === w.id); return { العامل: w.name, حاضر: records.filter((a) => a.status === "حاضر").length, "نصف يوم": records.filter((a) => a.status === "نصف يوم").length, غائب: records.filter((a) => a.status === "غائب").length }; })), "حضور العمال");
     const buf = XLSX.write(wb, { type: "array", bookType: "xlsx" });
     const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
     const filename = `تقرير-${month}.xlsx`;
@@ -1371,7 +1935,7 @@ function ReportsTab({ month, setMonth, projects, invoices, expenses, income, att
   return (
     <div className="flex flex-col gap-5">
       <div className="flex items-center justify-between flex-wrap gap-3">
-        <div><h1 className="text-xl font-bold" style={{ fontFamily: "'El Messiri', sans-serif", color: "var(--text-strong)" }}>التقارير الشهرية</h1><p className="text-sm mt-0.5" style={{ color: "var(--text-muted)" }}>ملخص شامل لأي شهر تختاره</p></div>
+        <div><h1 className="text-xl font-bold" style={{ fontFamily: "'El Messiri', sans-serif", color: "var(--text-strong)" }}>التقارير الشهرية</h1><p className="text-sm mt-0.5" style={{ color: "var(--text-muted)" }}>ملخص شامل لأي شهر تختاره — الصافي هنا = الواردات − المصاريف − الفواتير</p></div>
         <div className="flex items-center gap-2">
           <TextInput type="month" value={month} onChange={(e) => setMonth(e.target.value)} className="max-w-[170px]" />
           <PrimaryButton onClick={exportMonth}><Icon name="download" size={16} /> تصدير التقرير</PrimaryButton>
@@ -1415,7 +1979,7 @@ function ReportsTab({ month, setMonth, projects, invoices, expenses, income, att
         <div className="rounded-2xl border p-4" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>
           <h3 className="font-semibold text-sm mb-3" style={{ color: "var(--text-body)" }}>أيام حضور العمال هذا الشهر</h3>
           <div className="flex flex-col divide-y" style={{ borderColor: "var(--divider)" }}>
-            {attSummary.map((s) => <div key={s.name} className="flex items-center justify-between py-2 text-sm" style={{ color: "var(--text-body)", borderColor: "var(--divider)" }}><span>{s.name}</span><span className="font-medium">{s.present} يوم</span></div>)}
+            {attSummary.map((s) => <div key={s.name} className="flex items-center justify-between py-2 text-sm" style={{ color: "var(--text-body)", borderColor: "var(--divider)" }}><span>{s.name}</span><span className="flex items-center gap-2"><Badge bg="var(--good-bg)" fg="#4B6350">حاضر {s.present}</Badge><Badge bg="var(--warn-bg)" fg="#8A6A32">نصف يوم {s.half}</Badge><Badge bg="var(--divider)" fg="var(--text-muted)">غائب {s.absent}</Badge></span></div>)}
           </div>
         </div>
       )}
@@ -1465,7 +2029,7 @@ function AddPersonalForm({ onAdd }) {
   const [amount, setAmount] = useState("");
   const [date, setDate] = useState(todayISO());
   const [description, setDescription] = useState("");
-  const submit = () => { if (!positiveNumber(amount)) return; onAdd({ id: uid(), type, amount: Number(amount), date, description: description.trim() }); };
+  const submit = () => { if (!positiveNumber(amount) || Number(amount) < 0) { notify("المبلغ يجب أن يكون موجبًا."); return; } onAdd({ id: uid(), type, amount: Number(amount), date, description: description.trim() }); };
   return (
     <div className="flex flex-col gap-3">
       <div><FieldLabel>النوع</FieldLabel><Select value={type} onChange={(e) => setType(e.target.value)}><option value="واصل">واصل (مبلغ استلمته)</option><option value="مصروف">مصروف (صرفته)</option></Select></div>
@@ -1480,7 +2044,11 @@ function AddPersonalForm({ onAdd }) {
 function InventoryTab({ inventory, upsert, remove }) {
   const [showAdd, setShowAdd] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(null);
-  const adjust = (item, delta) => upsert("inventory", { ...item, quantity: Math.max(0, Number(item.quantity) + delta) });
+  const adjust = (item, delta) => {
+    const current = Number(item.quantity);
+    if (!Number.isFinite(current)) return;
+    upsert("inventory", { ...item, quantity: Math.max(0, current + delta) });
+  };
   return (
     <div className="flex flex-col gap-5">
       <div className="flex items-center justify-between flex-wrap gap-3">
@@ -1511,16 +2079,20 @@ function InventoryTab({ inventory, upsert, remove }) {
           })}
         </div>
       )}
-      {showAdd && <Modal title="مادة جديدة في المخزون" onClose={() => setShowAdd(false)}><AddInventoryForm onAdd={(item) => { upsert("inventory", item); setShowAdd(false); }} /></Modal>}
+      {showAdd && <Modal title="مادة جديدة في المخزون" onClose={() => setShowAdd(false)}><AddInventoryForm existing={inventory} onAdd={(item) => { upsert("inventory", item); setShowAdd(false); }} /></Modal>}
     </div>
   );
 }
-function AddInventoryForm({ onAdd }) {
+function AddInventoryForm({ onAdd, existing = [] }) {
   const [name, setName] = useState("");
   const [quantity, setQuantity] = useState("");
   const [unit, setUnit] = useState("كيس");
   const [minThreshold, setMinThreshold] = useState("");
-  const submit = () => { if (!name.trim()) return; onAdd({ id: uid(), name: name.trim(), quantity: Number(quantity || 0), unit, minThreshold: Number(minThreshold || 0) }); };
+  const submit = () => {
+    if (!name.trim() || !nonNegativeNumber(quantity || 0) || !nonNegativeNumber(minThreshold || 0)) { notify("أدخل كميات غير سالبة."); return; }
+    if (hasDuplicateName(existing, name)) { notify("هذه المادة موجودة مسبقًا."); return; }
+    onAdd({ id: uid(), name: name.trim(), quantity: Number(quantity || 0), unit, minThreshold: Number(minThreshold || 0) });
+  };
   return (
     <div className="flex flex-col gap-3">
       <div><FieldLabel>اسم المادة</FieldLabel><TextInput list="item-suggestions-2" value={name} onChange={(e) => setName(e.target.value)} /><datalist id="item-suggestions-2">{ITEM_SUGGESTIONS.map((s) => <option key={s} value={s} />)}</datalist></div>
@@ -1533,11 +2105,11 @@ function AddInventoryForm({ onAdd }) {
 
 function App() {
   const auth = useAuth();
-  if (!hasSupabaseConfig) return <FactoryApp />;
-  if (auth.loading) return <div dir="rtl" className="min-h-screen flex items-center justify-center text-sm" style={{ background: "var(--bg)", color: "var(--text-muted)", fontFamily: "'Cairo', sans-serif" }}>جارٍ التحقق من الحساب...</div>;
-  if (!auth.session) return <AuthScreen auth={auth} />;
-  if (auth.error || !auth.organization) return <div dir="rtl" className="min-h-screen flex items-center justify-center p-4 text-sm" style={{ background: "var(--bg)", color: "#A34632", fontFamily: "'Cairo', sans-serif" }}>تعذر تجهيز مساحة الشركة: {auth.error || "لم يتم العثور على المنظمة"}</div>;
-  return <FactoryApp organizationId={auth.organization.organization_id || auth.organization.id} organizationCode={auth.organization.invite_code} email={auth.session.user.email} onSignOut={auth.signOut} />;
+  if (!hasSupabaseConfig) return <><ToastHost /><FactoryApp /></>;
+  if (auth.loading) return <><ToastHost /><div dir="rtl" className="min-h-screen flex items-center justify-center text-sm" style={{ background: "var(--bg)", color: "var(--text-muted)", fontFamily: "'Cairo', sans-serif" }}>جارٍ التحقق من الحساب...</div></>;
+  if (!auth.session) return <><ToastHost /><AuthScreen auth={auth} /></>;
+  if (auth.error || !auth.organization) return <><ToastHost /><div dir="rtl" className="min-h-screen flex items-center justify-center p-4 text-sm" style={{ background: "var(--bg)", color: "#A34632", fontFamily: "'Cairo', sans-serif" }}>تعذر تجهيز مساحة الشركة: {auth.error || "لم يتم العثور على المنظمة"}</div></>;
+  return <><ToastHost /><FactoryApp organizationId={auth.organization.organization_id || auth.organization.id} organizationCode={auth.organization.invite_code} email={auth.session.user.email} onSignOut={auth.signOut} /></>;
 }
 
 const root = ReactDOM.createRoot(document.getElementById("root"));
