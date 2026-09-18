@@ -108,6 +108,39 @@ const normalizeName = (value) => String(value || "").trim().replace(/\s+/g, " ")
 const hasDuplicateName = (items, name, currentId = null) => (items || []).some((item) => item.id !== currentId && normalizeName(item.name) === normalizeName(name));
 const contactBalance = (c) => (c.transactions || []).reduce((s, t) => s + (t.type === "debit" ? Number(t.amount) : -Number(t.amount)), 0);
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[ch]));
+const getProjectPayments = (project, income = []) => {
+  const embeddedPayments = (project.payments || []).map((payment) => ({
+    ...payment,
+    paymentId: payment.paymentId || payment.id,
+    projectId: project.id,
+  }));
+  const incomePayments = income
+    .filter((entry) => entry.projectId === project.id)
+    .map((entry) => ({ ...entry, paymentId: entry.paymentId || entry.id }));
+  const unique = new Map();
+  [...embeddedPayments, ...incomePayments].forEach((payment) => {
+    const key = payment.paymentId || payment.id;
+    if (key) unique.set(key, payment);
+  });
+  return Array.from(unique.values());
+};
+const projectCost = (project) => (project.measurements || []).reduce((sum, measurement) => sum + Number(measurement.totalAmount || 0), 0);
+const getUniqueIncome = (income = []) => {
+  const unique = new Map();
+  income.forEach((entry) => {
+    const key = entry.projectId ? (entry.paymentId || entry.id) : entry.id;
+    if (key) unique.set(key, entry);
+  });
+  return Array.from(unique.values());
+};
+const upsertSupplierDebt = (supplier, transaction) => {
+  const transactions = supplier.transactions || [];
+  const exists = transactions.some((item) => item.id === transaction.id);
+  return {
+    ...supplier,
+    transactions: exists ? transactions.map((item) => item.id === transaction.id ? { ...item, ...transaction } : item) : [transaction, ...transactions],
+  };
+};
 
 const PRODUCT_TYPES = ["تكس", "سيليكات", "كلاهما"];
 const STATUSES = ["جديد", "قيد التنفيذ", "مكتمل"];
@@ -308,12 +341,13 @@ async function exportBackup(downloadsNs, data) {
   if (!window.XLSX) { notify("تعذر تحميل مكتبة التصدير، حاول تحديث الصفحة."); return; }
   const wb = XLSX.utils.book_new();
   const sheets = {
-    "المشاريع": data.projects.map((p) => ({ الزبون: p.customerName, الهاتف: p.phone, الموقع: p.location, النوع: p.productType, الحالة: p.status, "تاريخ الإنشاء": p.dateCreated, ملاحظات: p.notes })),
+    "المشاريع": data.projects.map((p) => ({ الزبون: p.customerName, الهاتف: p.phone, الموقع: p.location, النوع: p.productType, الحالة: p.status, "تاريخ الإنشاء": p.dateCreated, "تاريخ الإكمال": p.completedAt || "", الإجمالي: projectCost(p), ملاحظات: p.notes })),
     "بضاعة المشاريع": data.projects.flatMap((p) => (p.items || []).map((i) => ({ الزبون: p.customerName, الاتجاه: i.direction, المادة: i.name, الكمية: i.quantity, الوحدة: i.unit, التاريخ: i.date }))),
     "مكاييل المشاريع": data.projects.flatMap((p) => (p.measurements || []).flatMap((m) => (m.entries || []).map((e) => ({ الزبون: p.customerName, العامل: m.workerName, التاريخ: m.date, البند: e.label, الكمية: e.quantity, السعر: e.unitPrice, المجموع: e.total })))),
     "الفواتير": data.invoices.map((i) => ({ "رقم الفاتورة": i.invoiceNumber || "", النوع: i.type, المورد: i.supplierName || "", المبلغ: i.amount, التاريخ: i.date, الوصف: i.description })),
     "المصاريف": data.expenses.map((e) => ({ النوع: e.type, المبلغ: e.amount, التاريخ: e.date, الوصف: e.description })),
-    "الواردات": data.income.map((x) => ({ الزبون: x.customerName, المبلغ: x.amount, التاريخ: x.date, الوصف: x.description })),
+    "الواردات": getUniqueIncome(data.income).map((x) => ({ الزبون: x.customerName, المشروع: data.projects.find((p) => p.id === x.projectId)?.customerName || "", "معرف المشروع": x.projectId || "", المبلغ: x.amount, التاريخ: x.date, الوصف: x.description })),
+    "دفعات المشاريع": Array.from(new Map(data.projects.flatMap((project) => getProjectPayments(project, data.income).map((payment) => [payment.paymentId || payment.id, { الزبون: project.customerName, "معرف المشروع": project.id, "تاريخ الدفعة": payment.date, المبلغ: payment.amount, "وصف الدفعة": payment.description || "" }]))).values()),
     "المخزون": data.inventory.map((i) => ({ المادة: i.name, الكمية: i.quantity, الوحدة: i.unit, "حد التنبيه": i.minThreshold })),
     "العملاء": data.customers.map((c) => ({ الاسم: c.name, الهاتف: c.phone, الرصيد: contactBalance(c), ملاحظات: c.notes })),
     "العمال": data.workers.map((c) => ({ الاسم: c.name, الهاتف: c.phone, الرصيد: contactBalance(c), ملاحظات: c.notes })),
@@ -419,7 +453,7 @@ function FactoryApp({ organizationId, organizationCode, email, onSignOut }) {
 
   const lowStock = useMemo(() => inventory.filter((i) => Number(i.quantity) <= Number(i.minThreshold || 0)), [inventory]);
   const thisMonth = monthKey(todayISO());
-  const monthIncome = useMemo(() => income.filter((x) => monthKey(x.date) === thisMonth).reduce((s, x) => s + Number(x.amount || 0), 0), [income, thisMonth]);
+  const monthIncome = useMemo(() => getUniqueIncome(income).filter((x) => monthKey(x.date) === thisMonth).reduce((s, x) => s + Number(x.amount || 0), 0), [income, thisMonth]);
   const monthExpense = useMemo(() => expenses.filter((x) => monthKey(x.date) === thisMonth).reduce((s, x) => s + Number(x.amount || 0), 0), [expenses, thisMonth]);
   const monthInvoices = useMemo(() => invoices.filter((x) => monthKey(x.date) === thisMonth).reduce((s, x) => s + Number(x.amount || 0), 0), [invoices, thisMonth]);
   const customerDebt = useMemo(() => customers.reduce((s, c) => s + Math.max(0, contactBalance(c)), 0), [customers]);
@@ -498,7 +532,7 @@ function FactoryApp({ organizationId, organizationCode, email, onSignOut }) {
         {tab === "accounts" && (
           <AccountsTab sub={accountsSub} setSub={setAccountsSub}
             customers={customers} suppliers={suppliers} workers={workers} upsert={upsert} remove={remove}
-            projects={projects} onOpenProject={(id) => setOpenProjectId(id)} />
+            projects={projects} income={income} onOpenProject={(id) => setOpenProjectId(id)} />
         )}
         {tab === "attendance" && <AttendanceTab workers={workers} attendance={attendance} upsert={upsert} remove={remove} />}
         {tab === "inventory" && <InventoryTab inventory={inventory} upsert={upsert} remove={remove} />}
@@ -511,11 +545,15 @@ function FactoryApp({ organizationId, organizationCode, email, onSignOut }) {
 
       {openProject && (
         <ProjectDetail project={openProject} onClose={() => setOpenProjectId(null)} onSave={(updated) => upsert("projects", updated)}
-          onDelete={() => { remove("projects", openProject.id); setOpenProjectId(null); }} addIncome={(entry) => upsert("income", entry)}
-          customers={customers} upsertCustomer={(c) => upsert("customers", c)} />
+          onDelete={() => { income.filter((entry) => entry.projectId === openProject.id).forEach((entry) => remove("income", entry.id)); remove("projects", openProject.id); setOpenProjectId(null); }}
+          onAddPayment={(nextProject, payment) => {
+            upsert("projects", nextProject);
+            upsert("income", { id: payment.id, paymentId: payment.id, projectId: nextProject.id, date: payment.date, customerName: nextProject.customerName, amount: payment.amount, description: payment.description });
+          }}
+          customers={customers} income={income} upsertCustomer={(c) => upsert("customers", c)} />
       )}
       {showNewProject && (
-        <NewProjectModal onClose={() => setShowNewProject(false)} onCreate={(proj) => { upsert("projects", proj); setShowNewProject(false); setOpenProjectId(proj.id); }}
+        <NewProjectModal onClose={() => setShowNewProject(false)} onCreate={(proj) => { upsert("projects", proj); (proj.payments || []).forEach((payment) => upsert("income", { id: payment.id, paymentId: payment.id, projectId: proj.id, date: payment.date, customerName: proj.customerName, amount: payment.amount, description: payment.description })); setShowNewProject(false); setOpenProjectId(proj.id); }}
           customers={customers} upsert={upsert} />
       )}
     </div>
@@ -540,7 +578,7 @@ function Dashboard({ projects, invoices, lowStock, customerDebt, monthIncome, mo
         <StatCard icon="hammer" label="مشاريع جارية" value={active.length} accent="#6E8F72" />
         <StatCard icon="circleDot" label="مشاريع قادمة" value={leads.length} accent="#C69C4B" />
         <StatCard icon="alert" label="مواد ناقصة بالمخزون" value={lowStock.length} accent="#A34632" />
-        <StatCard icon={net >= 0 ? "trendUp" : "trendDown"} label="صافي هذا الشهر" value={fmt(net)} sub="واردات − مصاريف − فواتير" accent={net >= 0 ? "#4B6350" : "#A34632"} />
+        <StatCard icon={net >= 0 ? "trendUp" : "trendDown"} label="صافي الحركة النقدية" value={fmt(net)} sub="واردات − مصاريف − فواتير" accent={net >= 0 ? "#4B6350" : "#A34632"} />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
@@ -689,6 +727,10 @@ function CustomerPicker({ customers, customerId, customerName, onSelect, onCreat
 function NewProjectModal({ onClose, onCreate, customers, upsert }) {
   const [customerId, setCustomerId] = useState("");
   const [phone, setPhone] = useState("");
+  const [dateCreated, setDateCreated] = useState(todayISO());
+  const [initialPayment, setInitialPayment] = useState("");
+  const [initialPaymentDate, setInitialPaymentDate] = useState(todayISO());
+  const [initialPaymentNote, setInitialPaymentNote] = useState("");
   const [location, setLocation] = useState("");
   const [productType, setProductType] = useState("تكس");
   const [notes, setNotes] = useState("");
@@ -699,13 +741,23 @@ function NewProjectModal({ onClose, onCreate, customers, upsert }) {
   const submit = () => {
     const customer = customers.find((c) => c.id === customerId) || createdCustomer;
     if (!customer) return;
-    onCreate({ id: uid(), customerId: customer.id, customerName: customer.name, phone: (phone.trim() || customer.phone || ""), location: location.trim(), productType, status: "جديد", dateCreated: todayISO(), notes: notes.trim(), items: [], measurements: [], completedAt: null });
+    if (initialPayment !== "" && !positiveNumber(initialPayment)) { notify("مبلغ الدفعة الأولى يجب أن يكون موجبًا."); return; }
+    if (positiveNumber(initialPayment)) {
+      if (!initialPaymentDate) { notify("اختر تاريخ الدفعة الأولى."); return; }
+      if (!dateCreated) { notify("اختر تاريخ إنشاء المشروع."); return; }
+      if (initialPaymentDate < dateCreated) { notify("لا يمكن أن تسبق الدفعة تاريخ إنشاء المشروع."); return; }
+    }
+    const payment = positiveNumber(initialPayment) ? { id: uid(), date: initialPaymentDate, amount: Number(initialPayment), description: initialPaymentNote.trim() || "دفعة عند إنشاء المشروع" } : null;
+    onCreate({ id: uid(), customerId: customer.id, customerName: customer.name, phone: (phone.trim() || customer.phone || ""), location: location.trim(), productType, status: "جديد", dateCreated, notes: notes.trim(), items: [], measurements: [], payments: payment ? [payment] : [], completedAt: null });
   };
   return (
     <Modal title="مشروع جديد" onClose={onClose}>
       <div className="flex flex-col gap-3">
         <div><FieldLabel>العميل</FieldLabel><CustomerPicker customers={customers} customerId={customerId} onSelect={setCustomerId} onCreateNew={handleCreateCustomer} /></div>
         <div><FieldLabel>رقم هاتف خاص بهذا المشروع (اختياري)</FieldLabel><TextInput value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="اتركه فارغًا لاستخدام هاتف العميل" /></div>
+        <div className="grid grid-cols-2 gap-3"><div><FieldLabel>تاريخ إنشاء المشروع</FieldLabel><TextInput type="date" value={dateCreated} onChange={(e) => setDateCreated(e.target.value)} /></div><div><FieldLabel>تاريخ الدفعة الأولى</FieldLabel><TextInput type="date" value={initialPaymentDate} onChange={(e) => setInitialPaymentDate(e.target.value)} /></div></div>
+        <div><FieldLabel>الواصل من الزبون عند إنشاء المشروع (اختياري)</FieldLabel><TextInput type="number" value={initialPayment} onChange={(e) => setInitialPayment(e.target.value)} placeholder="اتركه فارغًا إذا لم يدفع" /></div>
+        {positiveNumber(initialPayment) && <div><FieldLabel>ملاحظة الدفعة (اختياري)</FieldLabel><TextInput value={initialPaymentNote} onChange={(e) => setInitialPaymentNote(e.target.value)} /></div>}
         <div><FieldLabel>موقع المشروع</FieldLabel><TextInput value={location} onChange={(e) => setLocation(e.target.value)} placeholder="الحي / المنطقة" /></div>
         <div><FieldLabel>نوع المنتج المطلوب</FieldLabel><Select value={productType} onChange={(e) => setProductType(e.target.value)}>{PRODUCT_TYPES.map((t) => <option key={t}>{t}</option>)}</Select></div>
         <div><FieldLabel>ملاحظات (اختياري)</FieldLabel><textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} className="w-full rounded-lg border px-3 py-2 text-sm outline-none" style={{ background: "var(--input-bg)", borderColor: "var(--card-border)", color: "var(--text-strong)" }} /></div>
@@ -1236,13 +1288,22 @@ function printProjectInvoice(project) {
 }
 
 
-function ProjectDetail({ project, onClose, onSave, onDelete, addIncome, customers, upsertCustomer }) {
+function ProjectDetail({ project, onClose, onSave, onDelete, onAddPayment, customers, upsertCustomer, income = [] }) {
   const [sub, setSub] = useState("info");
   const [local, setLocal] = useState(project);
   const [confirmDelete, setConfirmDelete] = useState(false);
   useEffect(() => setLocal(project), [project.id]);
   const update = (patch) => { const next = { ...local, ...patch }; setLocal(next); onSave(next); };
-  const totalMeasured = (local.measurements || []).reduce((s, m) => s + Number(m.totalAmount || 0), 0);
+  const totalMeasured = projectCost(local);
+  const projectPayments = getProjectPayments(local, income);
+  const totalPaid = projectPayments.reduce((s, payment) => s + Number(payment.amount || 0), 0);
+  const remaining = Math.max(0, totalMeasured - totalPaid);
+
+  const addPayment = (payment) => {
+    const next = { ...local, payments: [payment, ...(local.payments || [])] };
+    setLocal(next);
+    onAddPayment(next, payment);
+  };
 
   return (
     <Modal title={`مشروع — ${local.customerName}`} onClose={onClose} wide>
@@ -1266,7 +1327,7 @@ function ProjectDetail({ project, onClose, onSave, onDelete, addIncome, customer
             <div><FieldLabel>رقم الهاتف لهذا المشروع</FieldLabel><TextInput value={local.phone} onChange={(e) => update({ phone: e.target.value })} /></div>
             <div><FieldLabel>الموقع</FieldLabel><TextInput value={local.location} onChange={(e) => update({ location: e.target.value })} /></div>
             <div><FieldLabel>نوع المنتج</FieldLabel><Select value={local.productType} onChange={(e) => update({ productType: e.target.value })}>{PRODUCT_TYPES.map((t) => <option key={t}>{t}</option>)}</Select></div>
-            <div><FieldLabel>تاريخ الإنشاء</FieldLabel><TextInput value={local.dateCreated} disabled /></div>
+            <div><FieldLabel>تاريخ الإنشاء</FieldLabel><TextInput type="date" value={local.dateCreated || ""} onChange={(e) => update({ dateCreated: e.target.value })} /></div>
           </div>
           <div>
             <FieldLabel>الحالة</FieldLabel>
@@ -1274,12 +1335,16 @@ function ProjectDetail({ project, onClose, onSave, onDelete, addIncome, customer
             <div className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>تتحدّث هذه الحالة تلقائيًا: «قيد التنفيذ» عند أول حركة بضاعة، و«مكتمل» عند أول كيل — ويمكنك تعديلها يدويًا عند الحاجة.</div>
           </div>
           <div><FieldLabel>ملاحظات</FieldLabel><textarea value={local.notes} onChange={(e) => update({ notes: e.target.value })} rows={2} className="w-full rounded-lg border px-3 py-2 text-sm outline-none" style={{ background: "var(--input-bg)", borderColor: "var(--card-border)", color: "var(--text-strong)" }} /></div>
-          <div className="rounded-xl p-3 flex items-center justify-between text-sm mt-1" style={{ background: "var(--divider)" }}><span style={{ color: "var(--text-muted)" }}>إجمالي المكاييل المسجّلة لهذا المشروع</span><span className="font-bold" style={{ color: "var(--text-strong)" }}>{fmt(totalMeasured)}</span></div>
+          <div className="grid grid-cols-3 gap-2 text-sm mt-1">
+            <div className="rounded-xl p-3" style={{ background: "var(--divider)" }}><div className="text-xs" style={{ color: "var(--text-muted)" }}>التكلفة الإجمالية</div><div className="font-bold mt-1" style={{ color: "var(--text-strong)" }}>{fmt(totalMeasured)}</div></div>
+            <div className="rounded-xl p-3" style={{ background: "var(--good-bg)" }}><div className="text-xs" style={{ color: "var(--text-muted)" }}>الواصل</div><div className="font-bold mt-1" style={{ color: "#4B6350" }}>{fmt(totalPaid)}</div></div>
+            <div className="rounded-xl p-3" style={{ background: remaining === 0 ? "var(--good-bg)" : "var(--warn-bg)" }}><div className="text-xs" style={{ color: "var(--text-muted)" }}>{remaining === 0 ? "الحالة" : "الباقي"}</div><div className="font-bold mt-1" style={{ color: remaining === 0 ? "#4B6350" : "#A34632" }}>{remaining === 0 ? "خالص" : fmt(remaining)}</div></div>
+          </div>
           <div className="flex gap-2">
             <GhostButton onClick={() => printProjectInvoice(local)}><Icon name="download" size={14} /> طباعة فاتورة القياس</GhostButton>
           </div>
           {local.status !== "مكتمل" && <PrimaryButton full onClick={() => update({ status: "مكتمل", completedAt: todayISO() })}><Icon name="check" size={16} /> إنهاء المشروع يدويًا</PrimaryButton>}
-          {local.status === "مكتمل" && <RecordIncomeInline project={local} onAdd={(entry) => addIncome(entry)} />}
+          <RecordIncomeInline project={local} onAdd={addPayment} />
           <div className="pt-3 border-t flex justify-end" style={{ borderColor: "var(--card-border)" }}>
             {confirmDelete ? <ConfirmInline label="حذف المشروع نهائيًا؟" onConfirm={onDelete} onCancel={() => setConfirmDelete(false)} /> : <button onClick={() => setConfirmDelete(true)} className="text-xs flex items-center gap-1" style={{ color: "#A34632" }}><Icon name="trash" size={13} /> حذف المشروع</button>}
           </div>
@@ -1294,11 +1359,16 @@ function ProjectDetail({ project, onClose, onSave, onDelete, addIncome, customer
 function RecordIncomeInline({ project, onAdd }) {
   const [amount, setAmount] = useState("");
   const [note, setNote] = useState("");
+  const submit = () => {
+    if (!positiveNumber(amount)) { notify("أدخل مبلغًا موجبًا."); return; }
+    onAdd({ id: uid(), date: todayISO(), amount: Number(amount), description: note.trim() || "دفعة من الزبون" });
+    setAmount(""); setNote("");
+  };
   return (
     <div className="rounded-xl border p-3 flex flex-col gap-2" style={{ borderColor: "var(--card-border)" }}>
       <div className="text-sm font-medium flex items-center gap-1.5" style={{ color: "var(--text-body)" }}><Icon name="wallet" size={14} /> تسجيل وارد من الزبون</div>
       <div className="flex gap-2"><TextInput type="number" placeholder="المبلغ المستلم" value={amount} onChange={(e) => setAmount(e.target.value)} /><TextInput placeholder="ملاحظة (اختياري)" value={note} onChange={(e) => setNote(e.target.value)} /></div>
-      <GhostButton onClick={() => { if (!positiveNumber(amount)) return; onAdd({ id: uid(), date: todayISO(), projectId: project.id, customerName: project.customerName, amount: Number(amount), description: note }); setAmount(""); setNote(""); }}><Icon name="plus" size={14} /> إضافة الوارد</GhostButton>
+      <GhostButton onClick={submit}><Icon name="plus" size={14} /> إضافة الدفعة</GhostButton>
     </div>
   );
 }
@@ -1412,6 +1482,7 @@ function ProjectMeasurements({ project, update }) {
 // ---------- Invoices (with line items) ----------
 function InvoicesTab({ invoices, projects, suppliers, upsert, remove }) {
   const [showAdd, setShowAdd] = useState(false);
+  const [editingInvoice, setEditingInvoice] = useState(null);
   const [typeFilter, setTypeFilter] = useState("الكل");
   const [pendingDelete, setPendingDelete] = useState(null);
   const [expanded, setExpanded] = useState(null);
@@ -1425,6 +1496,20 @@ function InvoicesTab({ invoices, projects, suppliers, upsert, remove }) {
       const supplier = suppliers.find((s) => s.id === invoice.supplierId);
       if (supplier) upsert("suppliers", { ...supplier, transactions: (supplier.transactions || []).filter((t) => t.id !== invoice.debtTransactionId) });
     }
+  };
+  const syncSupplierDebt = (supplierId, transactionId, transaction) => {
+    if (!supplierId || !transactionId) return;
+    const supplier = suppliers.find((s) => s.id === supplierId);
+    if (supplier) upsert("suppliers", upsertSupplierDebt(supplier, transaction));
+  };
+  const saveInvoice = (invoice) => {
+    upsert("invoices", invoice);
+    if (editingInvoice?.supplierId && editingInvoice.debtTransactionId && (editingInvoice.supplierId !== invoice.supplierId || !invoice.debtTransactionId)) {
+      const oldSupplier = suppliers.find((s) => s.id === editingInvoice.supplierId);
+      if (oldSupplier) upsert("suppliers", { ...oldSupplier, transactions: (oldSupplier.transactions || []).filter((t) => t.id !== editingInvoice.debtTransactionId) });
+    }
+    syncSupplierDebt(invoice.supplierId, invoice.debtTransactionId, { id: invoice.debtTransactionId, date: invoice.date, type: "debit", amount: invoice.amount, note: "فاتورة " + (invoice.invoiceNumber ? "#" + invoice.invoiceNumber : invoice.type) });
+    setEditingInvoice(null);
   };
 
   return (
@@ -1469,7 +1554,7 @@ function InvoicesTab({ invoices, projects, suppliers, upsert, remove }) {
                       </div>
                     )}
                     <div className="flex justify-end">
-                      {pendingDelete === inv.id ? <ConfirmInline onConfirm={() => { deleteInvoice(inv); setPendingDelete(null); }} onCancel={() => setPendingDelete(null)} /> : <button onClick={() => setPendingDelete(inv.id)} className="text-xs flex items-center gap-1" style={{ color: "#A34632" }}><Icon name="trash" size={13} /> حذف الفاتورة</button>}
+                      {pendingDelete === inv.id ? <ConfirmInline onConfirm={() => { deleteInvoice(inv); setPendingDelete(null); }} onCancel={() => setPendingDelete(null)} /> : <div className="flex items-center gap-3"><button onClick={() => setEditingInvoice(inv)} className="text-xs" style={{ color: "var(--accent)" }}>تعديل الفاتورة</button><button onClick={() => setPendingDelete(inv.id)} className="text-xs flex items-center gap-1" style={{ color: "#A34632" }}><Icon name="trash" size={13} /> حذف الفاتورة</button></div>}
                     </div>
                   </div>
                 )}
@@ -1478,22 +1563,23 @@ function InvoicesTab({ invoices, projects, suppliers, upsert, remove }) {
           </div>
         </div>
       )}
-      {showAdd && <Modal title="فاتورة جديدة" onClose={() => setShowAdd(false)} wide><AddInvoiceForm projects={projects} suppliers={suppliers} upsert={upsert} onAdd={(inv) => { upsert("invoices", inv); setShowAdd(false); }} /></Modal>}
+      {showAdd && <Modal title="فاتورة جديدة" onClose={() => setShowAdd(false)} wide><AddInvoiceForm projects={projects} suppliers={suppliers} upsert={upsert} onAdd={(inv) => { saveInvoice(inv); setShowAdd(false); }} /></Modal>}
+      {editingInvoice && <Modal title="تعديل الفاتورة" onClose={() => setEditingInvoice(null)} wide><AddInvoiceForm initialInvoice={editingInvoice} projects={projects} suppliers={suppliers} upsert={upsert} onAdd={saveInvoice} /></Modal>}
     </div>
   );
 }
 
-function AddInvoiceForm({ onAdd, projects, suppliers, upsert }) {
-  const [invoiceNumber, setInvoiceNumber] = useState("");
-  const [type, setType] = useState(INVOICE_TYPES[0]);
-  const [supplierId, setSupplierId] = useState("");
-  const [supplierName, setSupplierName] = useState("");
-  const [amount, setAmount] = useState("");
-  const [date, setDate] = useState(todayISO());
-  const [description, setDescription] = useState("");
-  const [projectId, setProjectId] = useState("");
-  const [markAsDebt, setMarkAsDebt] = useState(false);
-  const [items, setItems] = useState([{ name: "", quantity: "", unit: "قطعة", unitPrice: "", total: "" }]);
+function AddInvoiceForm({ onAdd, projects, suppliers, upsert, initialInvoice = null }) {
+  const [invoiceNumber, setInvoiceNumber] = useState(initialInvoice?.invoiceNumber || "");
+  const [type, setType] = useState(initialInvoice?.type || INVOICE_TYPES[0]);
+  const [supplierId, setSupplierId] = useState(initialInvoice?.supplierId || "");
+  const [supplierName, setSupplierName] = useState(initialInvoice?.supplierName || "");
+  const [amount, setAmount] = useState(initialInvoice?.amount ? String(initialInvoice.amount) : "");
+  const [date, setDate] = useState(initialInvoice?.date || todayISO());
+  const [description, setDescription] = useState(initialInvoice?.description || "");
+  const [projectId, setProjectId] = useState(initialInvoice?.projectId || "");
+  const [markAsDebt, setMarkAsDebt] = useState(Boolean(initialInvoice?.debtTransactionId));
+  const [items, setItems] = useState(initialInvoice?.items?.length ? initialInvoice.items : [{ name: "", quantity: "", unit: "قطعة", unitPrice: "", total: "" }]);
 
   const setItem = (idx, patch) => setItems((prev) => prev.map((it, i) => { if (i !== idx) return it; const next = { ...it, ...patch }; if (next.quantity && next.unitPrice && nonNegativeNumber(next.quantity) && nonNegativeNumber(next.unitPrice)) next.total = String(Number(next.quantity) * Number(next.unitPrice)); return next; }));
   const addRow = () => setItems((prev) => [...prev, { name: "", quantity: "", unit: "قطعة", unitPrice: "", total: "" }]);
@@ -1509,19 +1595,12 @@ function AddInvoiceForm({ onAdd, projects, suppliers, upsert }) {
   const submit = () => {
     if (!positiveNumber(effectiveAmount) || Number(effectiveAmount) < 0) { notify("مبلغ الفاتورة يجب أن يكون موجبًا."); return; }
     const cleanItems = items.filter((it) => it.name.trim() && positiveNumber(it.total) && nonNegativeNumber(it.quantity || 0) && nonNegativeNumber(it.unitPrice || 0)).map((it) => ({ name: it.name.trim(), quantity: Number(it.quantity || 0), unit: it.unit, unitPrice: Number(it.unitPrice || 0), total: Number(it.total) }));
-    const debtTransactionId = markAsDebt && supplierId ? uid() : null;
+    const debtTransactionId = markAsDebt && supplierId ? (initialInvoice?.debtTransactionId || uid()) : null;
     const inv = {
-      id: uid(), invoiceNumber: invoiceNumber.trim(), type, supplierId: supplierId || null, supplierName: supplierName.trim(),
+      id: initialInvoice?.id || uid(), invoiceNumber: invoiceNumber.trim(), type, supplierId: supplierId || null, supplierName: supplierName.trim(),
       amount: effectiveAmount, date, description: description.trim(), projectId: type === "مواد بناء" ? (projectId || null) : null, items: cleanItems, debtTransactionId,
     };
     onAdd(inv);
-    if (markAsDebt && supplierId) {
-      const sup = suppliers.find((s) => s.id === supplierId);
-      if (sup) {
-        const tx = { id: debtTransactionId, date, type: "debit", amount: effectiveAmount, note: "فاتورة " + (invoiceNumber ? "#" + invoiceNumber : type) };
-        upsert("suppliers", { ...sup, transactions: [tx, ...(sup.transactions || [])] });
-      }
-    }
   };
 
   return (
@@ -1566,7 +1645,7 @@ function AddInvoiceForm({ onAdd, projects, suppliers, upsert }) {
         <div><FieldLabel>التاريخ</FieldLabel><TextInput type="date" value={date} onChange={(e) => setDate(e.target.value)} /></div>
       </div>
       <div><FieldLabel>وصف (اختياري)</FieldLabel><TextInput value={description} onChange={(e) => setDescription(e.target.value)} /></div>
-      <PrimaryButton onClick={submit} full disabled={!effectiveAmount}><Icon name="plus" size={16} /> حفظ الفاتورة</PrimaryButton>
+      <PrimaryButton onClick={submit} full disabled={!effectiveAmount}><Icon name="plus" size={16} /> {initialInvoice ? "حفظ تعديل الفاتورة" : "حفظ الفاتورة"}</PrimaryButton>
     </div>
   );
 }
@@ -1575,11 +1654,41 @@ function AddInvoiceForm({ onAdd, projects, suppliers, upsert }) {
 function FinanceTab({ expenses, income, projects, upsert, remove }) {
   const [sub, setSub] = useState("expenses");
   const [showAdd, setShowAdd] = useState(false);
+  const [editingExpense, setEditingExpense] = useState(null);
+  const [editingIncome, setEditingIncome] = useState(null);
   const [pendingDelete, setPendingDelete] = useState(null);
   const list = sub === "expenses" ? expenses : income;
   const sorted = [...list].sort((a, b) => (b.date || "").localeCompare(a.date || ""));
   const totalExpenses = expenses.reduce((s, x) => s + Number(x.amount || 0), 0);
   const totalIncome = income.reduce((s, x) => s + Number(x.amount || 0), 0);
+  const saveIncome = (nextIncome) => {
+    const previousProjectId = editingIncome?.projectId;
+    if (previousProjectId && previousProjectId !== nextIncome.projectId) {
+      const previousProject = projects.find((project) => project.id === previousProjectId);
+      if (previousProject) upsert("projects", { ...previousProject, payments: (previousProject.payments || []).filter((payment) => (payment.paymentId || payment.id) !== (editingIncome.paymentId || editingIncome.id)) });
+    }
+    if (nextIncome.projectId) {
+      const nextProject = projects.find((project) => project.id === nextIncome.projectId);
+      if (nextProject) {
+        const payment = { id: nextIncome.paymentId || nextIncome.id, paymentId: nextIncome.paymentId || nextIncome.id, date: nextIncome.date, amount: nextIncome.amount, description: nextIncome.description };
+        const payments = nextProject.payments || [];
+        const paymentKey = payment.paymentId || payment.id;
+        const nextPayments = payments.some((item) => (item.paymentId || item.id) === paymentKey)
+          ? payments.map((item) => (item.paymentId || item.id) === paymentKey ? { ...item, ...payment } : item)
+          : [payment, ...payments];
+        upsert("projects", { ...nextProject, payments: nextPayments });
+      }
+    }
+    upsert("income", nextIncome);
+    setEditingIncome(null);
+  };
+  const deleteIncome = (entry) => {
+    if (entry.projectId) {
+      const project = projects.find((item) => item.id === entry.projectId);
+      if (project) upsert("projects", { ...project, payments: (project.payments || []).filter((payment) => (payment.paymentId || payment.id) !== (entry.paymentId || entry.id)) });
+    }
+    remove("income", entry.id);
+  };
   return (
     <div className="flex flex-col gap-5">
       <div className="flex items-center justify-between flex-wrap gap-3">
@@ -1600,10 +1709,10 @@ function FinanceTab({ expenses, income, projects, upsert, remove }) {
           <div className="flex flex-col divide-y" style={{ borderColor: "var(--divider)" }}>
             {sorted.map((x) => (
               <div key={x.id} className="flex items-center justify-between px-4 py-3 gap-2" style={{ borderColor: "var(--divider)" }}>
-                <div className="min-w-0"><div className="text-sm font-medium" style={{ color: "var(--text-body)" }}>{sub === "expenses" ? x.type : (x.customerName || "وارد")}</div><div className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>{x.date} {x.description ? "· " + x.description : ""}</div></div>
+                <div className="min-w-0"><div className="text-sm font-medium" style={{ color: "var(--text-body)" }}>{sub === "expenses" ? x.type : (x.customerName || "وارد")}</div><div className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>{x.date} {x.projectId ? "· " + (projects.find((project) => project.id === x.projectId)?.customerName || "مشروع") : ""} {x.description ? "· " + x.description : ""}</div></div>
                 <div className="flex items-center gap-3 shrink-0">
                   <span className="font-semibold" style={{ color: sub === "expenses" ? "#A34632" : "#4B6350" }}>{sub === "expenses" ? "−" : "+"}{fmt(x.amount)}</span>
-                  {pendingDelete === x.id ? <ConfirmInline onConfirm={() => { remove(sub === "expenses" ? "expenses" : "income", x.id); setPendingDelete(null); }} onCancel={() => setPendingDelete(null)} /> : <button onClick={() => setPendingDelete(x.id)} style={{ color: "var(--text-muted)" }}><Icon name="trash" size={14} /></button>}
+                  {pendingDelete === x.id ? <ConfirmInline onConfirm={() => { sub === "expenses" ? remove("expenses", x.id) : deleteIncome(x); setPendingDelete(null); }} onCancel={() => setPendingDelete(null)} /> : <div className="flex items-center gap-3"><button onClick={() => sub === "expenses" ? setEditingExpense(x) : setEditingIncome(x)} className="text-xs" style={{ color: "var(--accent)" }}>تعديل</button><button onClick={() => setPendingDelete(x.id)} style={{ color: "var(--text-muted)" }}><Icon name="trash" size={14} /></button></div>}
                 </div>
               </div>
             ))}
@@ -1612,44 +1721,46 @@ function FinanceTab({ expenses, income, projects, upsert, remove }) {
       )}
       {showAdd && sub === "expenses" && <Modal title="مصروف جديد" onClose={() => setShowAdd(false)}><AddExpenseForm onAdd={(e) => { upsert("expenses", e); setShowAdd(false); }} /></Modal>}
       {showAdd && sub === "income" && <Modal title="وارد جديد" onClose={() => setShowAdd(false)}><AddIncomeForm projects={projects} onAdd={(e) => { upsert("income", e); setShowAdd(false); }} /></Modal>}
+      {editingExpense && <Modal title="تعديل المصروف" onClose={() => setEditingExpense(null)}><AddExpenseForm initialExpense={editingExpense} onAdd={(e) => { upsert("expenses", e); setEditingExpense(null); }} /></Modal>}
+      {editingIncome && <Modal title="تعديل الوارد" onClose={() => setEditingIncome(null)}><AddIncomeForm initialIncome={editingIncome} projects={projects} onAdd={saveIncome} /></Modal>}
     </div>
   );
 }
-function AddExpenseForm({ onAdd }) {
-  const [type, setType] = useState(EXPENSE_TYPES[0]);
-  const [amount, setAmount] = useState("");
-  const [date, setDate] = useState(todayISO());
-  const [description, setDescription] = useState("");
-  const submit = () => { if (!positiveNumber(amount) || Number(amount) < 0) { notify("المبلغ يجب أن يكون موجبًا."); return; } onAdd({ id: uid(), type, amount: Number(amount), date, description: description.trim() }); };
+function AddExpenseForm({ onAdd, initialExpense = null }) {
+  const [type, setType] = useState(initialExpense?.type || EXPENSE_TYPES[0]);
+  const [amount, setAmount] = useState(initialExpense?.amount ? String(initialExpense.amount) : "");
+  const [date, setDate] = useState(initialExpense?.date || todayISO());
+  const [description, setDescription] = useState(initialExpense?.description || "");
+  const submit = () => { if (!positiveNumber(amount) || Number(amount) < 0) { notify("المبلغ يجب أن يكون موجبًا."); return; } onAdd({ id: initialExpense?.id || uid(), type, amount: Number(amount), date, description: description.trim() }); };
   return (
     <div className="flex flex-col gap-3">
       <div><FieldLabel>نوع المصروف</FieldLabel><Select value={type} onChange={(e) => setType(e.target.value)}>{EXPENSE_TYPES.map((t) => <option key={t}>{t}</option>)}</Select></div>
       <div className="grid grid-cols-2 gap-3"><div><FieldLabel>المبلغ</FieldLabel><TextInput type="number" value={amount} onChange={(e) => setAmount(e.target.value)} /></div><div><FieldLabel>التاريخ</FieldLabel><TextInput type="date" value={date} onChange={(e) => setDate(e.target.value)} /></div></div>
       <div><FieldLabel>وصف (اختياري)</FieldLabel><TextInput value={description} onChange={(e) => setDescription(e.target.value)} /></div>
-      <PrimaryButton onClick={submit} full disabled={!amount}><Icon name="plus" size={16} /> حفظ المصروف</PrimaryButton>
+      <PrimaryButton onClick={submit} full disabled={!amount}><Icon name="plus" size={16} /> {initialExpense ? "حفظ تعديل المصروف" : "حفظ المصروف"}</PrimaryButton>
     </div>
   );
 }
-function AddIncomeForm({ onAdd, projects }) {
-  const [projectId, setProjectId] = useState("");
-  const [customerName, setCustomerName] = useState("");
-  const [amount, setAmount] = useState("");
-  const [date, setDate] = useState(todayISO());
-  const [description, setDescription] = useState("");
-  const submit = () => { if (!positiveNumber(amount) || Number(amount) < 0) { notify("المبلغ يجب أن يكون موجبًا."); return; } const proj = projects.find((p) => p.id === projectId); onAdd({ id: uid(), projectId: projectId || null, customerName: proj ? proj.customerName : customerName.trim(), amount: Number(amount), date, description: description.trim() }); };
+function AddIncomeForm({ onAdd, projects, initialIncome = null }) {
+  const [projectId, setProjectId] = useState(initialIncome?.projectId || "");
+  const [customerName, setCustomerName] = useState(initialIncome?.customerName || "");
+  const [amount, setAmount] = useState(initialIncome?.amount ? String(initialIncome.amount) : "");
+  const [date, setDate] = useState(initialIncome?.date || todayISO());
+  const [description, setDescription] = useState(initialIncome?.description || "");
+  const submit = () => { if (!positiveNumber(amount)) { notify("المبلغ يجب أن يكون موجبًا."); return; } const proj = projects.find((p) => p.id === projectId); onAdd({ ...initialIncome, id: initialIncome?.id || uid(), paymentId: initialIncome?.paymentId, projectId: projectId || null, customerName: proj ? proj.customerName : customerName.trim(), amount: Number(amount), date, description: description.trim() }); };
   return (
     <div className="flex flex-col gap-3">
       <div><FieldLabel>المشروع (اختياري)</FieldLabel><Select value={projectId} onChange={(e) => setProjectId(e.target.value)}><option value="">بدون ربط بمشروع</option>{projects.map((p) => <option key={p.id} value={p.id}>{p.customerName} — {p.location}</option>)}</Select></div>
       {!projectId && <div><FieldLabel>اسم الزبون</FieldLabel><TextInput value={customerName} onChange={(e) => setCustomerName(e.target.value)} /></div>}
       <div className="grid grid-cols-2 gap-3"><div><FieldLabel>المبلغ</FieldLabel><TextInput type="number" value={amount} onChange={(e) => setAmount(e.target.value)} /></div><div><FieldLabel>التاريخ</FieldLabel><TextInput type="date" value={date} onChange={(e) => setDate(e.target.value)} /></div></div>
       <div><FieldLabel>وصف (اختياري)</FieldLabel><TextInput value={description} onChange={(e) => setDescription(e.target.value)} /></div>
-      <PrimaryButton onClick={submit} full disabled={!amount}><Icon name="plus" size={16} /> حفظ الوارد</PrimaryButton>
+      <PrimaryButton onClick={submit} full disabled={!amount}><Icon name="plus" size={16} /> {initialIncome ? "حفظ تعديل الوارد" : "حفظ الوارد"}</PrimaryButton>
     </div>
   );
 }
 
 // ---------- Accounts (customers / workers / suppliers ledger) ----------
-function AccountsTab({ sub, setSub, customers, suppliers, workers, upsert, remove, projects, onOpenProject }) {
+function AccountsTab({ sub, setSub, customers, suppliers, workers, upsert, remove, projects, income, onOpenProject }) {
   const KINDS = { customers: { label: "عملاء", icon: "users", collection: "customers", data: customers }, workers: { label: "عمال", icon: "user", collection: "workers", data: workers }, suppliers: { label: "موردون", icon: "briefcase", collection: "suppliers", data: suppliers } };
   const current = KINDS[sub];
   return (
@@ -1662,12 +1773,12 @@ function AccountsTab({ sub, setSub, customers, suppliers, workers, upsert, remov
           </button>
         ))}
       </div>
-      <ContactsList kind={sub} label={current.label} icon={current.icon} collection={current.collection} data={current.data} upsert={upsert} remove={remove} projects={projects} onOpenProject={onOpenProject} />
+      <ContactsList kind={sub} label={current.label} icon={current.icon} collection={current.collection} data={current.data} upsert={upsert} remove={remove} projects={projects} income={income} onOpenProject={onOpenProject} />
     </div>
   );
 }
 
-function ContactsList({ kind, label, icon, collection, data, upsert, remove, projects, onOpenProject }) {
+function ContactsList({ kind, label, icon, collection, data, upsert, remove, projects, income, onOpenProject }) {
   const [query, setQuery] = useState("");
   const [showAdd, setShowAdd] = useState(false);
   const [openId, setOpenId] = useState(null);
@@ -1705,7 +1816,7 @@ function ContactsList({ kind, label, icon, collection, data, upsert, remove, pro
         </div>
       )}
       {showAdd && <Modal title={`إضافة ${label.replace(/ون$|اء$/, "")}`} onClose={() => setShowAdd(false)}><AddContactForm existing={data} onAdd={(c) => { upsert(collection, c); setShowAdd(false); }} /></Modal>}
-      {open && <ContactDetail contact={open} label={label} icon={icon} onClose={() => setOpenId(null)} onSave={(c) => upsert(collection, c)} onDelete={() => { remove(collection, open.id); setOpenId(null); }} relatedProjects={relatedProjects} onOpenProject={onOpenProject} />}
+      {open && <ContactDetail contact={open} label={label} icon={icon} onClose={() => setOpenId(null)} onSave={(c) => upsert(collection, c)} onDelete={() => { remove(collection, open.id); setOpenId(null); }} relatedProjects={relatedProjects} income={income} onOpenProject={onOpenProject} />}
     </div>
   );
 }
@@ -1729,7 +1840,7 @@ function AddContactForm({ onAdd, existing = [] }) {
   );
 }
 
-function ContactDetail({ contact, label, icon, onClose, onSave, onDelete, relatedProjects, onOpenProject }) {
+function ContactDetail({ contact, label, icon, onClose, onSave, onDelete, relatedProjects, income = [], onOpenProject }) {
   const [local, setLocal] = useState(contact);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [txType, setTxType] = useState("debit");
@@ -1740,6 +1851,12 @@ function ContactDetail({ contact, label, icon, onClose, onSave, onDelete, relate
   const update = (patch) => { const next = { ...local, ...patch }; setLocal(next); onSave(next); };
   const balance = contactBalance(local);
   const transactions = local.transactions || [];
+  const projectTotals = (relatedProjects || []).reduce((summary, project) => {
+    const cost = projectCost(project);
+    const paid = getProjectPayments(project, income).reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
+    return { cost: summary.cost + cost, paid: summary.paid + paid };
+  }, { cost: 0, paid: 0 });
+  const projectRemaining = Math.max(0, projectTotals.cost - projectTotals.paid);
 
   const addTx = () => {
     if (!positiveNumber(txAmount) || Number(txAmount) < 0) { notify("مبلغ الحركة يجب أن يكون موجبًا."); return; }
@@ -1759,7 +1876,7 @@ function ContactDetail({ contact, label, icon, onClose, onSave, onDelete, relate
         <div><FieldLabel>ملاحظات</FieldLabel><TextInput value={local.notes} onChange={(e) => update({ notes: e.target.value })} /></div>
 
         <div className="rounded-xl p-3 flex items-center justify-between" style={{ background: balance > 0 ? "var(--warn-bg)" : balance < 0 ? "var(--good-bg)" : "var(--divider)" }}>
-          <span className="text-sm" style={{ color: "var(--text-body)" }}>الرصيد الحالي</span>
+          <span className="text-sm" style={{ color: "var(--text-body)" }}>الرصيد اليدوي للعميل</span>
           <span className="font-bold text-lg" style={{ color: balance > 0 ? "#A34632" : balance < 0 ? "#4B6350" : "var(--text-strong)" }}>
             {balance === 0 ? "لا يوجد" : balance > 0 ? `عليه ${fmt(balance)}` : `له ${fmt(-balance)}`}
           </span>
@@ -1768,17 +1885,26 @@ function ContactDetail({ contact, label, icon, onClose, onSave, onDelete, relate
         {relatedProjects != null && (
           <div className="rounded-xl border p-3 flex flex-col gap-2" style={{ borderColor: "var(--card-border)" }}>
             <FieldLabel>مشاريع هذا العميل ({relatedProjects.length})</FieldLabel>
+            <div className="text-xs" style={{ color: "var(--text-muted)" }}>هذا الرصيد لا يشمل دفعات المشاريع، وتظهر دفعات المشاريع في الملخص أدناه.</div>
+            <div className="grid grid-cols-3 gap-2 text-xs">
+              <div className="rounded-lg p-2" style={{ background: "var(--divider)" }}><div style={{ color: "var(--text-muted)" }}>تكلفة المشاريع</div><strong style={{ color: "var(--text-strong)" }}>{fmt(projectTotals.cost)}</strong></div>
+              <div className="rounded-lg p-2" style={{ background: "var(--good-bg)" }}><div style={{ color: "var(--text-muted)" }}>مجموع الواصل</div><strong style={{ color: "#4B6350" }}>{fmt(projectTotals.paid)}</strong></div>
+              <div className="rounded-lg p-2" style={{ background: projectRemaining ? "var(--warn-bg)" : "var(--good-bg)" }}><div style={{ color: "var(--text-muted)" }}>{projectRemaining ? "الباقي العام" : "الحالة"}</div><strong style={{ color: projectRemaining ? "#A34632" : "#4B6350" }}>{projectRemaining ? fmt(projectRemaining) : "خالص"}</strong></div>
+            </div>
             {relatedProjects.length === 0 ? (
               <div className="text-xs" style={{ color: "var(--text-muted)" }}>لا توجد مشاريع مرتبطة بهذا العميل بعد</div>
             ) : (
               <div className="flex flex-col divide-y" style={{ borderColor: "var(--divider)" }}>
                 {relatedProjects.map((p) => {
-                  const total = (p.measurements || []).reduce((s, m) => s + Number(m.totalAmount || 0), 0);
+                  const total = projectCost(p);
+                  const paid = getProjectPayments(p, income).reduce((s, payment) => s + Number(payment.amount || 0), 0);
+                  const remaining = Math.max(0, total - paid);
                   return (
                     <button key={p.id} onClick={() => { onOpenProject(p.id); onClose(); }} className="flex items-center justify-between py-2 text-right" style={{ borderColor: "var(--divider)" }}>
                       <div><div className="text-sm" style={{ color: "var(--text-body)" }}>{p.location || "بدون موقع"}</div><div className="text-xs" style={{ color: "var(--text-muted)" }}>{p.dateCreated} · {p.productType}</div></div>
                       <div className="flex items-center gap-2">
                         <Badge bg={STATUS_COLOR[p.status].bg} fg={STATUS_COLOR[p.status].fg}>{p.status}</Badge>
+                        <span className="text-xs" style={{ color: remaining ? "#A34632" : "#4B6350" }}>{remaining ? `باقي ${fmt(remaining)}` : "خالص"}</span>
                         <span className="text-sm font-medium" style={{ color: "var(--text-strong)" }}>{fmt(total)}</span>
                       </div>
                     </button>
@@ -1894,7 +2020,7 @@ function AttendanceTab({ workers, attendance, upsert, remove }) {
 // ---------- Reports ----------
 function ReportsTab({ month, setMonth, projects, invoices, expenses, income, attendance, workers, downloadsNs }) {
   const inMonth = (arr, field) => arr.filter((x) => monthKey(x[field || "date"]) === month);
-  const mIncome = inMonth(income);
+  const mIncome = inMonth(getUniqueIncome(income));
   const mExpenses = inMonth(expenses);
   const mInvoices = inMonth(invoices);
   const totalIncome = mIncome.reduce((s, x) => s + Number(x.amount || 0), 0);
@@ -1920,10 +2046,11 @@ function ReportsTab({ month, setMonth, projects, invoices, expenses, income, att
     if (!window.XLSX) { notify("ميزة التصدير غير متاحة هنا حاليًا."); return; }
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([{ الشهر: month, الواردات: totalIncome, المصاريف: totalExpenses, الفواتير: totalInvoices, الصافي: net }]), "ملخص");
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(mIncome.map((x) => ({ الزبون: x.customerName, المبلغ: x.amount, التاريخ: x.date }))), "الواردات");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(mIncome.map((x) => ({ الزبون: x.customerName, المشروع: projects.find((p) => p.id === x.projectId)?.customerName || "", "معرف المشروع": x.projectId || "", المبلغ: x.amount, التاريخ: x.date, الوصف: x.description }))), "الواردات");
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(mExpenses.map((x) => ({ النوع: x.type, المبلغ: x.amount, التاريخ: x.date }))), "المصاريف");
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(mInvoices.map((x) => ({ النوع: x.type, المورد: x.supplierName, المبلغ: x.amount, التاريخ: x.date }))), "الفواتير");
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(completedProjects.map((p) => ({ الزبون: p.customerName, الموقع: p.location, "تاريخ المشروع": p.dateCreated, "تاريخ الإكمال": p.completedAt, الإجمالي: (p.measurements || []).reduce((s, m) => s + Number(m.totalAmount || 0), 0) }))), "مشاريع مكتملة");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(completedProjects.map((p) => ({ الزبون: p.customerName, الموقع: p.location, الحالة: p.status, "تاريخ المشروع": p.dateCreated, "تاريخ الإكمال": p.completedAt, الإجمالي: projectCost(p) }))), "مشاريع مكتملة");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(Array.from(new Map(projects.flatMap((project) => getProjectPayments(project, income).filter((payment) => monthKey(payment.date) === month).map((payment) => [payment.paymentId || payment.id, { الزبون: project.customerName, "معرف المشروع": project.id, "تاريخ الدفعة": payment.date, المبلغ: payment.amount, "وصف الدفعة": payment.description || "" }]))).values())), "دفعات المشاريع");
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(workers.map((w) => { const records = monthAttendance.filter((a) => a.workerId === w.id); return { العامل: w.name, حاضر: records.filter((a) => a.status === "حاضر").length, "نصف يوم": records.filter((a) => a.status === "نصف يوم").length, غائب: records.filter((a) => a.status === "غائب").length }; })), "حضور العمال");
     const buf = XLSX.write(wb, { type: "array", bookType: "xlsx" });
     const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
@@ -1935,7 +2062,7 @@ function ReportsTab({ month, setMonth, projects, invoices, expenses, income, att
   return (
     <div className="flex flex-col gap-5">
       <div className="flex items-center justify-between flex-wrap gap-3">
-        <div><h1 className="text-xl font-bold" style={{ fontFamily: "'El Messiri', sans-serif", color: "var(--text-strong)" }}>التقارير الشهرية</h1><p className="text-sm mt-0.5" style={{ color: "var(--text-muted)" }}>ملخص شامل لأي شهر تختاره — الصافي هنا = الواردات − المصاريف − الفواتير</p></div>
+        <div><h1 className="text-xl font-bold" style={{ fontFamily: "'El Messiri', sans-serif", color: "var(--text-strong)" }}>التقارير الشهرية</h1><p className="text-sm mt-0.5" style={{ color: "var(--text-muted)" }}>ملخص شامل لأي شهر تختاره — صافي الحركة النقدية = الواردات − المصاريف − الفواتير</p></div>
         <div className="flex items-center gap-2">
           <TextInput type="month" value={month} onChange={(e) => setMonth(e.target.value)} className="max-w-[170px]" />
           <PrimaryButton onClick={exportMonth}><Icon name="download" size={16} /> تصدير التقرير</PrimaryButton>
@@ -1946,7 +2073,7 @@ function ReportsTab({ month, setMonth, projects, invoices, expenses, income, att
         <StatCard icon="trendUp" label="واردات الشهر" value={fmt(totalIncome)} accent="#4B6350" />
         <StatCard icon="trendDown" label="مصاريف الشهر" value={fmt(totalExpenses)} accent="#A34632" />
         <StatCard icon="receipt" label="فواتير الشهر" value={fmt(totalInvoices)} accent="#8A6A32" />
-        <StatCard icon={net >= 0 ? "trendUp" : "trendDown"} label="الصافي" value={fmt(net)} accent={net >= 0 ? "#4B6350" : "#A34632"} />
+        <StatCard icon={net >= 0 ? "trendUp" : "trendDown"} label="صافي الحركة النقدية" value={fmt(net)} accent={net >= 0 ? "#4B6350" : "#A34632"} />
       </div>
 
       <div className="grid lg:grid-cols-2 gap-4">
