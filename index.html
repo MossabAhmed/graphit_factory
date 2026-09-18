@@ -281,6 +281,7 @@ function BarBreakdown({ rows }) {
 // ---------- persistence layer ----------
 function useFactoryData(organizationId) {
   const [downloadsNs, setDownloadsNs] = useState(null);
+  const [reloadToken, setReloadToken] = useState(0);
   const [ready, setReady] = useState(false);
   const [usingLocal, setUsingLocal] = useState(false);
   const [error, setError] = useState("");
@@ -311,7 +312,7 @@ function useFactoryData(organizationId) {
       .on("postgres_changes", { event: "*", schema: "public", table: "app_records", filter: "organization_id=eq." + organizationId }, loadRemote)
       .subscribe();
     return () => { cancelled = true; supabaseClient.removeChannel(channel); };
-  }, [organizationId]);
+  }, [organizationId, reloadToken]);
 
   const saveLocal = (name, list) => { try { localStorage.setItem(LOCAL_PREFIX + name, JSON.stringify(list)); } catch (e) { console.error(e); } };
 
@@ -345,7 +346,26 @@ function useFactoryData(organizationId) {
     }
   };
 
-  return { ready, usingLocal, data, upsert, remove, downloadsNs, error };
+  const reload = () => setReloadToken((value) => value + 1);
+  const importBackup = async (backup) => {
+    const validationError = validateJsonBackup(backup);
+    if (validationError) throw new Error(validationError);
+    downloadJsonBackup(data, "نسخة-احتياطية-كاملة-المصنع-" + todayISO() + "-قبل-الاستيراد.json");
+    let added = 0;
+    let updated = 0;
+    for (const name of COLLECTIONS) {
+      const currentIds = new Set((data[name] || []).map((record) => record.id));
+      for (const record of backup.collections[name]) {
+        if (currentIds.has(record.id)) updated += 1;
+        else added += 1;
+        await upsert(name, record);
+      }
+    }
+    reload();
+    return { added, updated };
+  };
+
+  return { ready, usingLocal, data, upsert, remove, downloadsNs, error, reload, importBackup };
 }
 
 async function exportBackup(downloadsNs, data) {
@@ -382,6 +402,40 @@ function downloadBlob(blob, filename) {
   const link = document.createElement("a");
   link.href = url; link.download = filename; link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+const buildJsonBackup = (data) => ({
+  schemaVersion: 1,
+  exportedAt: new Date().toISOString(),
+  collections: Object.fromEntries(COLLECTIONS.map((name) => [name, data[name] || []])),
+});
+
+function downloadJsonBackup(data, filename = "نسخة-احتياطية-كاملة-المصنع-" + todayISO() + ".json") {
+  const json = JSON.stringify(buildJsonBackup(data), null, 2);
+  downloadBlob(new Blob([json], { type: "application/json;charset=utf-8" }), filename);
+}
+
+function validateJsonBackup(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "ملف النسخة يجب أن يحتوي على كائن JSON.";
+  if (value.schemaVersion !== 1) return "إصدار النسخة غير مدعوم.";
+  if (!value.collections || typeof value.collections !== "object" || Array.isArray(value.collections)) return "قسم collections غير موجود أو غير صالح.";
+  for (const name of COLLECTIONS) {
+    const records = value.collections[name];
+    if (!Array.isArray(records)) return `مجموعة ${name} غير موجودة أو ليست مصفوفة.`;
+    const ids = new Set();
+    for (const record of records) {
+      if (!record || typeof record !== "object" || Array.isArray(record)) return `يوجد سجل تالف في مجموعة ${name}.`;
+      if (typeof record.id !== "string" || !record.id.trim()) return `يوجد سجل بلا معرف في مجموعة ${name}.`;
+      if (ids.has(record.id)) return `المعرف ${record.id} مكرر داخل مجموعة ${name}.`;
+      ids.add(record.id);
+      if (["invoices", "expenses", "income", "personalLog"].includes(name) && !positiveNumber(record.amount)) return `المبلغ في مجموعة ${name} يجب أن يكون موجبًا.`;
+      if (name === "projects") {
+        for (const payment of record.payments || []) if (!payment || !positiveNumber(payment.amount)) return `دفعة غير صالحة في المشروع ${record.id}.`;
+      }
+      for (const transaction of record.transactions || []) if (!transaction || !positiveNumber(transaction.amount)) return `معاملة غير صالحة في السجل ${record.id}.`;
+    }
+  }
+  return "";
 }
 
 function useAuth() {
@@ -453,7 +507,7 @@ function AuthScreen({ auth }) {
 
 // ---------- App ----------
 function FactoryApp({ organizationId, organizationCode, email, onSignOut }) {
-  const { ready, usingLocal, data, upsert, remove, downloadsNs, error } = useFactoryData(organizationId);
+  const { ready, usingLocal, data, upsert, remove, downloadsNs, error, importBackup } = useFactoryData(organizationId);
   const { projects, invoices, expenses, income, inventory, customers, suppliers, workers, attendance, personalLog } = data;
 
   const [tab, setTab] = useState("dashboard");
@@ -461,6 +515,7 @@ function FactoryApp({ organizationId, organizationCode, email, onSignOut }) {
   const [openProjectId, setOpenProjectId] = useState(null);
   const [showNewProject, setShowNewProject] = useState(false);
   const [reportMonth, setReportMonth] = useState(monthKey(todayISO()));
+  const importInputRef = useRef(null);
 
   const lowStock = useMemo(() => inventory.filter((i) => Number(i.quantity) <= Number(i.minThreshold || 0)), [inventory]);
   const thisMonth = monthKey(todayISO());
@@ -469,6 +524,19 @@ function FactoryApp({ organizationId, organizationCode, email, onSignOut }) {
   const monthExpense = useMemo(() => expenses.filter((x) => monthKey(x.date) === thisMonth).reduce((s, x) => s + Number(x.amount || 0), 0), [expenses, thisMonth]);
   const monthInvoices = useMemo(() => invoices.filter((x) => monthKey(x.date) === thisMonth).reduce((s, x) => s + Number(x.amount || 0), 0), [invoices, thisMonth]);
   const customerDebt = useMemo(() => customers.reduce((s, c) => s + Math.max(0, contactBalance(c)), 0), [customers]);
+
+  const handleImportBackup = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    try {
+      const backup = JSON.parse(await file.text());
+      const result = await importBackup(backup);
+      notify(`تم استيراد النسخة بنجاح: ${result.added} سجل جديد و${result.updated} سجل محدث.`, "success");
+    } catch (importError) {
+      notify(importError.message || "تعذر استيراد النسخة. لم يتم تغيير البيانات.");
+    }
+  };
 
   const openProject = projects.find((p) => p.id === openProjectId);
 
@@ -513,6 +581,14 @@ function FactoryApp({ organizationId, organizationCode, email, onSignOut }) {
           <button onClick={() => exportBackup(downloadsNs, data)} className="flex items-center gap-2 px-3 py-2.5 rounded-xl text-xs border border-stone-600 text-stone-300 hover:text-white transition">
             <Icon name="download" size={14} /> نسخة احتياطية (Excel)
           </button>
+          <button onClick={() => downloadJsonBackup(data)} className="flex items-center gap-2 px-3 py-2.5 rounded-xl text-xs border border-stone-600 text-stone-300 hover:text-white transition">
+            <Icon name="download" size={14} /> نسخة احتياطية كاملة (JSON)
+          </button>
+          <button onClick={() => importInputRef.current?.click()} className="flex items-center gap-2 px-3 py-2.5 rounded-xl text-xs border border-stone-600 text-stone-300 hover:text-white transition">
+            <Icon name="download" size={14} /> استيراد نسخة JSON
+          </button>
+          <input ref={importInputRef} type="file" accept=".json,application/json" onChange={handleImportBackup} className="hidden" />
+          <div className="px-2 text-[10px] leading-relaxed text-stone-500">الاستيراد يدمج البيانات ويحدّث السجلات ذات المعرف نفسه.</div>
           {usingLocal && <div className="px-2 text-[10px] leading-relaxed text-stone-500">يعمل التطبيق حاليًا بتخزين محلي على هذا المتصفح فقط.</div>}
           {organizationCode && <div className="px-2 text-[10px] leading-relaxed text-stone-400">رمز مشاركة الشركة: {organizationCode}</div>}
           {email && <button onClick={onSignOut} className="px-3 py-2 text-xs text-right text-stone-300 hover:text-white">تسجيل الخروج ({email})</button>}
@@ -533,6 +609,15 @@ function FactoryApp({ organizationId, organizationCode, email, onSignOut }) {
 
       <main className="flex-1 min-w-0 p-4 sm:p-6 pb-24 sm:pb-6">
         {error && <div className="mb-4 rounded-lg px-3 py-2 text-xs" style={{ background: "var(--warn-bg)", color: "#A34632" }}>تعذر مزامنة البيانات: {error}</div>}
+        <div className="sm:hidden mb-4 rounded-xl border p-3 flex flex-col gap-2" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>
+          <div className="text-xs font-semibold" style={{ color: "var(--text-body)" }}>النسخ الاحتياطي</div>
+          <div className="grid grid-cols-1 gap-2">
+            <button onClick={() => exportBackup(downloadsNs, data)} className="flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg text-xs border" style={{ borderColor: "var(--card-border)", color: "var(--text-body)" }}><Icon name="download" size={14} /> نسخة احتياطية (Excel)</button>
+            <button onClick={() => downloadJsonBackup(data)} className="flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg text-xs border" style={{ borderColor: "var(--card-border)", color: "var(--text-body)" }}><Icon name="download" size={14} /> نسخة احتياطية كاملة (JSON)</button>
+            <button onClick={() => importInputRef.current?.click()} className="flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg text-xs border" style={{ borderColor: "var(--card-border)", color: "var(--text-body)" }}><Icon name="upload" size={14} /> استيراد نسخة JSON</button>
+          </div>
+          <div className="text-[10px] leading-relaxed" style={{ color: "var(--text-muted)" }}>الاستيراد يدمج البيانات ويحدّث السجلات ذات المعرف نفسه.</div>
+        </div>
         {tab === "dashboard" && (
           <Dashboard projects={projects} invoices={invoices} lowStock={lowStock} customerDebt={customerDebt}
             monthIncome={monthIncome} monthExpense={monthExpense} monthInvoices={monthInvoices}
@@ -1640,13 +1725,13 @@ function AddInvoiceForm({ onAdd, projects, suppliers, upsert, initialInvoice = n
       <div className="rounded-xl border p-3 flex flex-col gap-2" style={{ borderColor: "var(--card-border)" }}>
         <FieldLabel>بنود الفاتورة (اختياري — أو أدخل مبلغًا إجماليًا أدناه)</FieldLabel>
         {items.map((it, idx) => (
-          <div key={idx} className="grid grid-cols-12 gap-1.5 items-center">
-            <div className="col-span-4"><TextInput placeholder="اسم المادة" value={it.name} onChange={(e) => setItem(idx, { name: e.target.value })} /></div>
-            <div className="col-span-2"><TextInput type="number" placeholder="كمية" value={it.quantity} onChange={(e) => setItem(idx, { quantity: e.target.value })} /></div>
-            <div className="col-span-2"><TextInput placeholder="وحدة" value={it.unit} onChange={(e) => setItem(idx, { unit: e.target.value })} /></div>
-            <div className="col-span-2"><TextInput type="number" placeholder="سعر" value={it.unitPrice} onChange={(e) => setItem(idx, { unitPrice: e.target.value })} /></div>
-            <div className="col-span-1"><TextInput type="number" placeholder="مجموع" value={it.total} onChange={(e) => setItem(idx, { total: e.target.value })} /></div>
-            <div className="col-span-1 flex justify-center">{items.length > 1 && <button onClick={() => removeRow(idx)} style={{ color: "var(--text-muted)" }}><Icon name="x" size={14} /></button>}</div>
+          <div key={idx} className="grid grid-cols-2 sm:grid-cols-12 gap-1.5 items-center">
+            <div className="col-span-2 sm:col-span-3 min-w-0"><TextInput placeholder="اسم المادة" value={it.name} onChange={(e) => setItem(idx, { name: e.target.value })} /></div>
+            <div className="col-span-1 sm:col-span-2 min-w-0"><TextInput type="number" placeholder="كمية" value={it.quantity} onChange={(e) => setItem(idx, { quantity: e.target.value })} /></div>
+            <div className="col-span-1 sm:col-span-2 min-w-0"><TextInput placeholder="وحدة" value={it.unit} onChange={(e) => setItem(idx, { unit: e.target.value })} /></div>
+            <div className="col-span-1 sm:col-span-2 min-w-0"><TextInput type="number" placeholder="السعر" value={it.unitPrice} onChange={(e) => setItem(idx, { unitPrice: e.target.value })} /></div>
+            <div className="col-span-1 sm:col-span-2 min-w-0"><TextInput type="number" placeholder="الإجمالي" value={it.total} onChange={(e) => setItem(idx, { total: e.target.value })} /></div>
+            <div className="col-span-2 sm:col-span-1 flex justify-center">{items.length > 1 && <button onClick={() => removeRow(idx)} style={{ color: "var(--text-muted)" }}><Icon name="x" size={14} /></button>}</div>
           </div>
         ))}
         <button onClick={addRow} className="text-xs flex items-center gap-1 self-start" style={{ color: "var(--accent)" }}><Icon name="plus" size={12} /> إضافة بند</button>
