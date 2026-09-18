@@ -133,6 +133,14 @@ const getUniqueIncome = (income = []) => {
   });
   return Array.from(unique.values());
 };
+const getAllProjectIncome = (projects = [], income = []) => [
+  ...getUniqueIncome(income.filter((entry) => !entry.projectId)),
+  ...projects.flatMap((project) => getProjectPayments(project, income).map((payment) => ({
+    ...payment,
+    customerName: payment.customerName || project.customerName,
+    projectId: project.id,
+  }))),
+];
 const upsertSupplierDebt = (supplier, transaction) => {
   const transactions = supplier.transactions || [];
   const exists = transactions.some((item) => item.id === transaction.id);
@@ -346,7 +354,7 @@ async function exportBackup(downloadsNs, data) {
     "مكاييل المشاريع": data.projects.flatMap((p) => (p.measurements || []).flatMap((m) => (m.entries || []).map((e) => ({ الزبون: p.customerName, العامل: m.workerName, التاريخ: m.date, البند: e.label, الكمية: e.quantity, السعر: e.unitPrice, المجموع: e.total })))),
     "الفواتير": data.invoices.map((i) => ({ "رقم الفاتورة": i.invoiceNumber || "", النوع: i.type, المورد: i.supplierName || "", المبلغ: i.amount, التاريخ: i.date, الوصف: i.description })),
     "المصاريف": data.expenses.map((e) => ({ النوع: e.type, المبلغ: e.amount, التاريخ: e.date, الوصف: e.description })),
-    "الواردات": getUniqueIncome(data.income).map((x) => ({ الزبون: x.customerName, المشروع: data.projects.find((p) => p.id === x.projectId)?.customerName || "", "معرف المشروع": x.projectId || "", المبلغ: x.amount, التاريخ: x.date, الوصف: x.description })),
+    "الواردات": getAllProjectIncome(data.projects, data.income).map((x) => ({ الزبون: x.customerName, المشروع: data.projects.find((p) => p.id === x.projectId)?.customerName || "", "معرف المشروع": x.projectId || "", المبلغ: x.amount, التاريخ: x.date, الوصف: x.description })),
     "دفعات المشاريع": Array.from(new Map(data.projects.flatMap((project) => getProjectPayments(project, data.income).map((payment) => [payment.paymentId || payment.id, { الزبون: project.customerName, "معرف المشروع": project.id, "تاريخ الدفعة": payment.date, المبلغ: payment.amount, "وصف الدفعة": payment.description || "" }]))).values()),
     "المخزون": data.inventory.map((i) => ({ المادة: i.name, الكمية: i.quantity, الوحدة: i.unit, "حد التنبيه": i.minThreshold })),
     "العملاء": data.customers.map((c) => ({ الاسم: c.name, الهاتف: c.phone, الرصيد: contactBalance(c), ملاحظات: c.notes })),
@@ -453,7 +461,8 @@ function FactoryApp({ organizationId, organizationCode, email, onSignOut }) {
 
   const lowStock = useMemo(() => inventory.filter((i) => Number(i.quantity) <= Number(i.minThreshold || 0)), [inventory]);
   const thisMonth = monthKey(todayISO());
-  const monthIncome = useMemo(() => getUniqueIncome(income).filter((x) => monthKey(x.date) === thisMonth).reduce((s, x) => s + Number(x.amount || 0), 0), [income, thisMonth]);
+  const allIncome = useMemo(() => getAllProjectIncome(projects, income), [projects, income]);
+  const monthIncome = useMemo(() => allIncome.filter((x) => monthKey(x.date) === thisMonth).reduce((s, x) => s + Number(x.amount || 0), 0), [allIncome, thisMonth]);
   const monthExpense = useMemo(() => expenses.filter((x) => monthKey(x.date) === thisMonth).reduce((s, x) => s + Number(x.amount || 0), 0), [expenses, thisMonth]);
   const monthInvoices = useMemo(() => invoices.filter((x) => monthKey(x.date) === thisMonth).reduce((s, x) => s + Number(x.amount || 0), 0), [invoices, thisMonth]);
   const customerDebt = useMemo(() => customers.reduce((s, c) => s + Math.max(0, contactBalance(c)), 0), [customers]);
@@ -2020,7 +2029,8 @@ function AttendanceTab({ workers, attendance, upsert, remove }) {
 // ---------- Reports ----------
 function ReportsTab({ month, setMonth, projects, invoices, expenses, income, attendance, workers, downloadsNs }) {
   const inMonth = (arr, field) => arr.filter((x) => monthKey(x[field || "date"]) === month);
-  const mIncome = inMonth(getUniqueIncome(income));
+  const allIncome = getAllProjectIncome(projects, income);
+  const mIncome = inMonth(allIncome);
   const mExpenses = inMonth(expenses);
   const mInvoices = inMonth(invoices);
   const totalIncome = mIncome.reduce((s, x) => s + Number(x.amount || 0), 0);
