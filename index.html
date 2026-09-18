@@ -133,14 +133,17 @@ const getUniqueIncome = (income = []) => {
   });
   return Array.from(unique.values());
 };
-const getAllProjectIncome = (projects = [], income = []) => [
-  ...getUniqueIncome(income.filter((entry) => !entry.projectId)),
-  ...projects.flatMap((project) => getProjectPayments(project, income).map((payment) => ({
-    ...payment,
-    customerName: payment.customerName || project.customerName,
-    projectId: project.id,
-  }))),
-];
+const getAllProjectIncome = (projects = [], income = []) => {
+  const unique = new Map();
+  getUniqueIncome(income.filter((entry) => !entry.projectId)).forEach((entry) => unique.set(entry.id, entry));
+  projects.forEach((project) => {
+    getProjectPayments(project, income).forEach((payment) => {
+      const key = payment.paymentId || payment.id;
+      if (key) unique.set(key, { ...payment, customerName: payment.customerName || project.customerName, projectId: project.id });
+    });
+  });
+  return Array.from(unique.values());
+};
 const upsertSupplierDebt = (supplier, transaction) => {
   const transactions = supplier.transactions || [];
   const exists = transactions.some((item) => item.id === transaction.id);
