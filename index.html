@@ -88,6 +88,7 @@ const ICON_PATHS = {
   circleDot: <><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.3" fill="currentColor" stroke="none"/></>,
   barChart: <><rect x="4" y="12" width="3.5" height="8"/><rect x="10.2" y="6" width="3.5" height="14"/><rect x="16.5" y="15" width="3.5" height="5"/></>,
   download: <><path d="M12 3v12"/><polyline points="7,11 12,16 17,11"/><line x1="4" y1="21" x2="20" y2="21"/></>,
+  upload: <><path d="M12 21V9"/><polyline points="7,14 12,9 17,14"/><line x1="4" y1="21" x2="20" y2="21"/></>,
 };
 function Icon({ name, size = 16, color, style, className }) {
   return (
@@ -107,7 +108,65 @@ const monthKey = (iso) => (iso || "").slice(0, 7);
 const normalizeName = (value) => String(value || "").trim().replace(/\s+/g, " ").toLocaleLowerCase("ar");
 const hasDuplicateName = (items, name, currentId = null) => (items || []).some((item) => item.id !== currentId && normalizeName(item.name) === normalizeName(name));
 const contactBalance = (c) => (c.transactions || []).reduce((s, t) => s + (t.type === "debit" ? Number(t.amount) : -Number(t.amount)), 0);
+const getCustomerProjects = (customer, projects) => projects.filter((p) => p.customerId === customer.id || (!p.customerId && p.customerName === customer.name));
+const getCustomerOutstanding = (customer, projects, income) => {
+  const ledger = contactBalance(customer);
+  const projectsRemaining = getCustomerProjects(customer, projects).reduce((sum, project) => {
+    const cost = projectCost(project);
+    const paid = getProjectPayments(project, income).reduce((s, payment) => s + Number(payment.amount || 0), 0);
+    return sum + Math.max(0, cost - paid);
+  }, 0);
+  return { ledger, projectsRemaining, total: ledger + projectsRemaining };
+};
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[ch]));
+function numberToArabicWords(value) {
+  const num = Math.round(Number(value) || 0);
+  if (num === 0) return "صفر";
+  if (num < 0) return "سالب " + numberToArabicWords(-num);
+
+  const ones = ["", "واحد", "اثنان", "ثلاثة", "أربعة", "خمسة", "ستة", "سبعة", "ثمانية", "تسعة"];
+  const teens = ["عشرة", "أحد عشر", "اثنا عشر", "ثلاثة عشر", "أربعة عشر", "خمسة عشر", "ستة عشر", "سبعة عشر", "ثمانية عشر", "تسعة عشر"];
+  const tens = ["", "", "عشرون", "ثلاثون", "أربعون", "خمسون", "ستون", "سبعون", "ثمانون", "تسعون"];
+  const hundreds = ["", "مائة", "مئتان", "ثلاثمائة", "أربعمائة", "خمسمائة", "ستمائة", "سبعمائة", "ثمانمائة", "تسعمائة"];
+
+  const threeDigits = (n) => {
+    const parts = [];
+    const h = Math.floor(n / 100);
+    const rem = n % 100;
+    if (h > 0) parts.push(hundreds[h]);
+    if (rem > 0) {
+      if (rem < 10) parts.push(ones[rem]);
+      else if (rem < 20) parts.push(teens[rem - 10]);
+      else {
+        const t = Math.floor(rem / 10);
+        const o = rem % 10;
+        parts.push(o > 0 ? ones[o] + " و" + tens[t] : tens[t]);
+      }
+    }
+    return parts.join(" و");
+  };
+
+  const groups = [
+    { value: 1000000000, singular: "مليار", dual: "ملياران", plural: "مليارات" },
+    { value: 1000000, singular: "مليون", dual: "مليونان", plural: "ملايين" },
+    { value: 1000, singular: "ألف", dual: "ألفان", plural: "آلاف" },
+  ];
+
+  let n = num;
+  const resultParts = [];
+  for (const group of groups) {
+    const count = Math.floor(n / group.value);
+    n = n % group.value;
+    if (count > 0) {
+      if (count === 1) resultParts.push(group.singular);
+      else if (count === 2) resultParts.push(group.dual);
+      else if (count <= 10) resultParts.push(threeDigits(count) + " " + group.plural);
+      else resultParts.push(threeDigits(count) + " " + group.singular);
+    }
+  }
+  if (n > 0) resultParts.push(threeDigits(n));
+  return resultParts.join(" و");
+}
 const getProjectPayments = (project, income = []) => {
   const embeddedPayments = (project.payments || []).map((payment) => ({
     ...payment,
@@ -316,16 +375,21 @@ function useFactoryData(organizationId) {
 
   const saveLocal = (name, list) => { try { localStorage.setItem(LOCAL_PREFIX + name, JSON.stringify(list)); } catch (e) { console.error(e); } };
 
-  const upsert = async (name, docObj) => {
+  const upsert = async (name, docObj, options = {}) => {
     if (supabaseClient && organizationId) {
       const { error: upsertError } = await supabaseClient.from("app_records").upsert({ organization_id: organizationId, collection: name, id: docObj.id, payload: docObj }, { onConflict: "organization_id,collection,id" });
-      if (upsertError) { setError(upsertError.message); return; }
+      if (upsertError) {
+        setError(upsertError.message);
+        if (options.throwOnError) throw upsertError;
+        return false;
+      }
       setData((prev) => {
         const list = prev[name] || [];
         const idx = list.findIndex((d) => d.id === docObj.id);
         const next = idx === -1 ? [docObj, ...list] : list.map((d) => (d.id === docObj.id ? docObj : d));
         return { ...prev, [name]: next };
       });
+      return true;
     } else {
       setData((prev) => {
         const list = prev[name] || [];
@@ -334,6 +398,7 @@ function useFactoryData(organizationId) {
         saveLocal(name, next);
         return { ...prev, [name]: next };
       });
+      return true;
     }
   };
   const remove = async (name, id) => {
@@ -358,7 +423,7 @@ function useFactoryData(organizationId) {
       for (const record of backup.collections[name]) {
         if (currentIds.has(record.id)) updated += 1;
         else added += 1;
-        await upsert(name, record);
+        await upsert(name, record, { throwOnError: true });
       }
     }
     reload();
@@ -523,7 +588,7 @@ function FactoryApp({ organizationId, organizationCode, email, onSignOut }) {
   const monthIncome = useMemo(() => allIncome.filter((x) => monthKey(x.date) === thisMonth).reduce((s, x) => s + Number(x.amount || 0), 0), [allIncome, thisMonth]);
   const monthExpense = useMemo(() => expenses.filter((x) => monthKey(x.date) === thisMonth).reduce((s, x) => s + Number(x.amount || 0), 0), [expenses, thisMonth]);
   const monthInvoices = useMemo(() => invoices.filter((x) => monthKey(x.date) === thisMonth).reduce((s, x) => s + Number(x.amount || 0), 0), [invoices, thisMonth]);
-  const customerDebt = useMemo(() => customers.reduce((s, c) => s + Math.max(0, contactBalance(c)), 0), [customers]);
+  const customerDebt = useMemo(() => customers.reduce((s, c) => s + Math.max(0, getCustomerOutstanding(c, projects, income).total), 0), [customers, projects, income]);
 
   const handleImportBackup = async (event) => {
     const file = event.target.files?.[0];
@@ -534,7 +599,7 @@ function FactoryApp({ organizationId, organizationCode, email, onSignOut }) {
       const result = await importBackup(backup);
       notify(`تم استيراد النسخة بنجاح: ${result.added} سجل جديد و${result.updated} سجل محدث.`, "success");
     } catch (importError) {
-      notify(importError.message || "تعذر استيراد النسخة. لم يتم تغيير البيانات.");
+      notify("توقف الاستيراد عند فشل حفظ أحد السجلات. قد تكون بعض السجلات السابقة قد حُفظت؛ استخدم نسخة ما قبل الاستيراد للاسترجاع." + (importError?.message ? " التفاصيل: " + importError.message : ""));
     }
   };
 
@@ -585,7 +650,7 @@ function FactoryApp({ organizationId, organizationCode, email, onSignOut }) {
             <Icon name="download" size={14} /> نسخة احتياطية كاملة (JSON)
           </button>
           <button onClick={() => importInputRef.current?.click()} className="flex items-center gap-2 px-3 py-2.5 rounded-xl text-xs border border-stone-600 text-stone-300 hover:text-white transition">
-            <Icon name="download" size={14} /> استيراد نسخة JSON
+            <Icon name="upload" size={14} /> استيراد نسخة JSON
           </button>
           <input ref={importInputRef} type="file" accept=".json,application/json" onChange={handleImportBackup} className="hidden" />
           <div className="px-2 text-[10px] leading-relaxed text-stone-500">الاستيراد يدمج البيانات ويحدّث السجلات ذات المعرف نفسه.</div>
@@ -635,7 +700,7 @@ function FactoryApp({ organizationId, organizationCode, email, onSignOut }) {
         {tab === "inventory" && <InventoryTab inventory={inventory} upsert={upsert} remove={remove} />}
         {tab === "reports" && (
           <ReportsTab month={reportMonth} setMonth={setReportMonth} projects={projects} invoices={invoices} expenses={expenses} income={income}
-            attendance={attendance} workers={workers} downloadsNs={downloadsNs} />
+            attendance={attendance} workers={workers} customers={customers} suppliers={suppliers} downloadsNs={downloadsNs} />
         )}
         {tab === "personal" && <PersonalLogTab data={personalLog} upsert={upsert} remove={remove} />}
       </main>
@@ -736,8 +801,11 @@ function Dashboard({ projects, invoices, lowStock, customerDebt, monthIncome, mo
 function Projects({ projects, onOpen, onNew }) {
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("الكل");
+  const normalizedQuery = normalizeName(query);
   const filtered = projects.filter((p) => {
-    const matchQ = !query || p.customerName.includes(query) || (p.location || "").includes(query);
+    const workerNames = (p.measurements || []).map((measurement) => measurement.workerName || "");
+    const searchable = [p.customerName, p.location, ...workerNames].map(normalizeName);
+    const matchQ = !normalizedQuery || searchable.some((value) => value.includes(normalizedQuery));
     const matchS = statusFilter === "الكل" || p.status === statusFilter;
     return matchQ && matchS;
   });
@@ -750,7 +818,7 @@ function Projects({ projects, onOpen, onNew }) {
       <div className="flex items-center gap-3 flex-wrap">
         <div className="relative flex-1 min-w-[180px]">
           <span className="absolute right-3 top-1/2 -translate-y-1/2" style={{ color: "var(--text-muted)" }}><Icon name="search" size={15} /></span>
-          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="بحث باسم الزبون أو الموقع..." className="w-full rounded-lg border pr-9 pl-3 py-2 text-sm outline-none" style={{ background: "var(--input-bg)", borderColor: "var(--card-border)", color: "var(--text-strong)" }} />
+          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="بحث باسم الزبون أو الموقع أو العامل..." className="w-full rounded-lg border pr-9 pl-3 py-2 text-sm outline-none" style={{ background: "var(--input-bg)", borderColor: "var(--card-border)", color: "var(--text-strong)" }} />
         </div>
         <div className="flex gap-1.5 flex-wrap">
           {["الكل", ...STATUSES].map((s) => (
@@ -947,80 +1015,55 @@ function printProjectInvoice(project) {
     .invoice-page {
       width: 100%;
       min-height: 270mm;
-      padding: 8mm 7mm 6mm;
+      padding: 10mm 9mm 8mm;
       position: relative;
     }
 
     .company-header {
-      display: grid;
-      grid-template-columns: 1fr 1.35fr 1fr;
-      align-items: start;
-      gap: 12px;
-      border-bottom: 2px solid #222;
-      padding-bottom: 10px;
-    }
-
-    .header-side {
-      font-size: 12px;
-      line-height: 1.8;
-    }
-
-    .header-side.left {
-      text-align: left;
-    }
-
-    .header-center {
       text-align: center;
-      font-weight: bold;
-      line-height: 1.75;
+      border-bottom: 2px solid #222;
+      padding-bottom: 12px;
+      margin-bottom: 14px;
     }
 
     .company-name {
-      font-size: 21px;
+      font-size: 23px;
       font-weight: 900;
-      white-space: nowrap;
+      letter-spacing: 0.2px;
     }
 
     .company-subtitle {
       font-size: 13px;
       font-weight: bold;
-    }
-
-    .location {
-      font-size: 12px;
-      margin-top: 2px;
-    }
-
-    .document-info {
-      display: grid;
-      grid-template-columns: 1fr 1fr 1fr;
-      gap: 10px;
-      margin-top: 10px;
-      font-size: 12px;
-      font-weight: bold;
-    }
-
-    .document-info div {
-      border-bottom: 1px solid #777;
-      padding: 5px 4px;
-      min-height: 28px;
-    }
-
-    .document-info .label {
-      display: inline-block;
-      margin-left: 6px;
       color: #333;
+      margin-top: 4px;
+    }
+
+    .header-meta {
+      margin-top: 10px;
+      font-size: 11.5px;
+      color: #444;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .header-meta .meta-divider {
+      color: #bbb;
     }
 
     .document-title {
-      margin: 12px 0 10px;
+      margin: 0 0 14px;
       background: #555;
       color: #fff;
       text-align: center;
-      padding: 8px 10px;
-      font-size: 18px;
+      padding: 9px 10px;
+      font-size: 17px;
       font-weight: bold;
       letter-spacing: 0.3px;
+      border-radius: 4px;
     }
 
     .customer-box {
@@ -1029,7 +1072,7 @@ function printProjectInvoice(project) {
       border: 1.5px solid #222;
       border-radius: 9px;
       overflow: hidden;
-      margin-bottom: 16px;
+      margin-bottom: 14px;
     }
 
     .customer-cell {
@@ -1124,17 +1167,17 @@ function printProjectInvoice(project) {
     .summary-box {
       border: 1.5px solid #222;
       border-radius: 9px;
-      margin-top: 10px;
-      padding: 13px 16px;
+      margin-top: 14px;
+      padding: 14px 18px;
       min-height: 92px;
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 12px;
+      gap: 16px;
       font-size: 13px;
     }
 
     .summary-right {
-      line-height: 2;
+      line-height: 2.1;
     }
 
     .summary-right strong {
@@ -1147,7 +1190,7 @@ function printProjectInvoice(project) {
       align-items: center;
       justify-content: space-between;
       border-bottom: 1px solid #222;
-      padding-bottom: 9px;
+      padding-bottom: 10px;
       font-size: 17px;
       font-weight: 900;
     }
@@ -1158,7 +1201,7 @@ function printProjectInvoice(project) {
     }
 
     .signature-area {
-      margin-top: 12px;
+      margin-top: 30px;
       display: grid;
       grid-template-columns: 1fr 1fr;
       gap: 35px;
@@ -1167,37 +1210,22 @@ function printProjectInvoice(project) {
     }
 
     .signature-line {
-      margin-top: 27px;
+      margin-top: 34px;
       border-top: 1px solid #222;
       padding-top: 6px;
     }
 
-    .stamp {
-      width: 95px;
-      height: 95px;
-      border: 2px solid #777;
-      border-radius: 50%;
-      margin: 12px auto 0;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      color: #777;
-      font-size: 11px;
-      text-align: center;
-      line-height: 1.4;
-    }
-
     .footer {
       position: absolute;
-      bottom: 5mm;
-      left: 7mm;
-      right: 7mm;
+      bottom: 6mm;
+      left: 9mm;
+      right: 9mm;
       border-top: 1px solid #222;
-      padding-top: 7px;
-      display: flex;
-      justify-content: space-between;
-      font-size: 11px;
+      padding-top: 8px;
+      text-align: center;
+      font-size: 11.5px;
       font-weight: bold;
+      color: #333;
     }
 
     @media print {
@@ -1216,45 +1244,16 @@ function printProjectInvoice(project) {
   <main class="invoice-page">
 
     <header class="company-header">
-      <div class="header-side">
-        <div>العنوان:</div>
-        <div>ليبيا - طرابلس</div>
-        <div>عين زارة - بجانب شيل فرحات</div>
-      </div>
-
-      <div class="header-center">
-        <div class="company-name">شركة الشرق الكبرى</div>
-        <div class="company-subtitle">
-          لأعمال القياس والخدمات التنفيذية
-        </div>
-        <div class="location">
-          ليبيا - طرابلس - عين زارة - بجانب شيل فرحات
-        </div>
-      </div>
-
-      <div class="header-side left">
-        <div>التاريخ: ${escapeHtml(projectDate)}</div>
-        <div>رقم الفاتورة: ${invoiceNumber}</div>
-        <div>نوع المستند: فاتورة نهائية</div>
+      <div class="company-name">شركة الشرق الكبرى</div>
+      <div class="company-subtitle">للطلاء الخارجي والعوازل</div>
+      <div class="header-meta">
+        <span>ليبيا - طرابلس - عين زارة - بجانب شيل فرحات</span>
+        <span class="meta-divider">|</span>
+        <span>التاريخ: ${escapeHtml(projectDate)}</span>
+        <span class="meta-divider">|</span>
+        <span>رقم الفاتورة: ${invoiceNumber}</span>
       </div>
     </header>
-
-    <section class="document-info">
-      <div>
-        <span class="label">التاريخ:</span>
-        ${escapeHtml(projectDate)}
-      </div>
-
-      <div>
-        <span class="label">رقم الفاتورة:</span>
-        ${invoiceNumber}
-      </div>
-
-      <div>
-        <span class="label">الموقع:</span>
-        عين زارة
-      </div>
-    </section>
 
     <div class="document-title">
       فاتورة القياس النهائي
@@ -1314,7 +1313,7 @@ function printProjectInvoice(project) {
       <div class="summary-right">
         <div>
           <strong>الإجمالي كتابةً:</strong>
-          ${escapeHtml(fmt(total))} دينار ليبي فقط لا غير
+          ${escapeHtml(numberToArabicWords(total))} دينار ليبي فقط لا غير
         </div>
 
         <div>
@@ -1348,16 +1347,8 @@ function printProjectInvoice(project) {
       </div>
     </section>
 
-    <div class="stamp">
-      ختم  
-
-      شركة الشرق الكبرى
-    </div>
-
     <footer class="footer">
-      <span>شركة الشرق الكبرى</span>
-      <span>ليبيا - طرابلس - عين زارة - بجانب شيل فرحات</span>
-      <span>صفحة 1</span>
+      شركة الشرق الكبرى — شكرًا لتعاملكم معنا
     </footer>
 
   </main>
@@ -1369,19 +1360,19 @@ function printProjectInvoice(project) {
   printWindow.document.write(printHtml);
   printWindow.document.close();
 
-  printWindow.onload = () => {
-    printWindow.focus();
-    printWindow.print();
-  };
-
-  window.setTimeout(() => {
+  let printed = false;
+  const triggerPrint = () => {
+    if (printed) return;
+    printed = true;
     try {
       printWindow.focus();
       printWindow.print();
     } catch (error) {
       console.error("Print failed:", error);
     }
-  }, 700);
+  };
+  printWindow.onload = triggerPrint;
+  window.setTimeout(triggerPrint, 700);
 }
 
 
@@ -1581,10 +1572,19 @@ function InvoicesTab({ invoices, projects, suppliers, upsert, remove }) {
   const [showAdd, setShowAdd] = useState(false);
   const [editingInvoice, setEditingInvoice] = useState(null);
   const [typeFilter, setTypeFilter] = useState("الكل");
+  const [supplierQuery, setSupplierQuery] = useState("");
+  const [invoiceNumberQuery, setInvoiceNumberQuery] = useState("");
   const [pendingDelete, setPendingDelete] = useState(null);
   const [expanded, setExpanded] = useState(null);
 
-  const filtered = invoices.filter((i) => typeFilter === "الكل" || i.type === typeFilter);
+  const normalizedSupplierQuery = normalizeName(supplierQuery);
+  const normalizedInvoiceNumberQuery = normalizeName(invoiceNumberQuery);
+  const filtered = invoices.filter((i) => {
+    const matchType = typeFilter === "الكل" || i.type === typeFilter;
+    const matchSupplier = !normalizedSupplierQuery || normalizeName(i.supplierName).includes(normalizedSupplierQuery);
+    const matchInvoiceNumber = !normalizedInvoiceNumberQuery || normalizeName(i.invoiceNumber).includes(normalizedInvoiceNumberQuery);
+    return matchType && matchSupplier && matchInvoiceNumber;
+  });
   const total = filtered.reduce((s, i) => s + Number(i.amount || 0), 0);
   const sorted = [...filtered].sort((a, b) => (b.date || "").localeCompare(a.date || ""));
   const deleteInvoice = (invoice) => {
@@ -1617,6 +1617,8 @@ function InvoicesTab({ invoices, projects, suppliers, upsert, remove }) {
       </div>
       <div className="flex items-center gap-3 flex-wrap">
         <div className="flex gap-1.5 flex-wrap">{["الكل", ...INVOICE_TYPES].map((t) => <button key={t} onClick={() => setTypeFilter(t)} className="text-xs px-3 py-2 rounded-lg border transition" style={typeFilter === t ? { background: "var(--accent)", borderColor: "var(--accent)", color: "white" } : { background: "var(--card-bg)", borderColor: "var(--card-border)", color: "var(--text-body)" }}>{t}</button>)}</div>
+        <div className="relative min-w-[180px] flex-1"><span className="absolute right-3 top-1/2 -translate-y-1/2" style={{ color: "var(--text-muted)" }}><Icon name="search" size={15} /></span><TextInput value={supplierQuery} onChange={(e) => setSupplierQuery(e.target.value)} placeholder="بحث باسم المورد..." className="pr-9" /></div>
+        <div className="relative min-w-[150px] flex-1"><span className="absolute right-3 top-1/2 -translate-y-1/2" style={{ color: "var(--text-muted)" }}>#</span><TextInput value={invoiceNumberQuery} onChange={(e) => setInvoiceNumberQuery(e.target.value)} placeholder="بحث برقم الفاتورة..." className="pr-8" /></div>
         <div className="mr-auto rounded-lg px-4 py-2 text-sm" style={{ background: "var(--divider)" }}><span className="ml-1" style={{ color: "var(--text-muted)" }}>الإجمالي:</span><span className="font-bold" style={{ color: "var(--text-strong)" }}>{fmt(total)}</span></div>
       </div>
       {sorted.length === 0 ? <EmptyState icon="receipt" title="لا توجد فواتير" sub="أضف أول فاتورة لتبدأ" /> : (
@@ -1913,7 +1915,7 @@ function ContactsList({ kind, label, icon, collection, data, upsert, remove, pro
         </div>
       )}
       {showAdd && <Modal title={`إضافة ${label.replace(/ون$|اء$/, "")}`} onClose={() => setShowAdd(false)}><AddContactForm existing={data} onAdd={(c) => { upsert(collection, c); setShowAdd(false); }} /></Modal>}
-      {open && <ContactDetail contact={open} label={label} icon={icon} onClose={() => setOpenId(null)} onSave={(c) => upsert(collection, c)} onDelete={() => { remove(collection, open.id); setOpenId(null); }} relatedProjects={relatedProjects} income={income} onOpenProject={onOpenProject} />}
+      {open && <ContactDetail contact={open} label={label} icon={icon} onClose={() => setOpenId(null)} onSave={(c) => upsert(collection, c)} onDelete={() => { remove(collection, open.id); setOpenId(null); }} relatedProjects={relatedProjects} income={income} onOpenProject={onOpenProject} existing={data.filter((d) => d.id !== open.id)} />}
     </div>
   );
 }
@@ -1937,7 +1939,7 @@ function AddContactForm({ onAdd, existing = [] }) {
   );
 }
 
-function ContactDetail({ contact, label, icon, onClose, onSave, onDelete, relatedProjects, income = [], onOpenProject }) {
+function ContactDetail({ contact, label, icon, onClose, onSave, onDelete, relatedProjects, income = [], onOpenProject, existing = [] }) {
   const [local, setLocal] = useState(contact);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [txType, setTxType] = useState("debit");
@@ -1948,6 +1950,7 @@ function ContactDetail({ contact, label, icon, onClose, onSave, onDelete, relate
   const update = (patch) => { const next = { ...local, ...patch }; setLocal(next); onSave(next); };
   const balance = contactBalance(local);
   const transactions = local.transactions || [];
+  const isDuplicateName = hasDuplicateName(existing, local.name);
   const projectTotals = (relatedProjects || []).reduce((summary, project) => {
     const cost = projectCost(project);
     const paid = getProjectPayments(project, income).reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
@@ -1967,7 +1970,7 @@ function ContactDetail({ contact, label, icon, onClose, onSave, onDelete, relate
     <Modal title={local.name} onClose={onClose} wide>
       <div className="flex flex-col gap-4">
         <div className="grid sm:grid-cols-2 gap-3">
-          <div><FieldLabel>الاسم</FieldLabel><TextInput value={local.name} onChange={(e) => update({ name: e.target.value })} /></div>
+          <div><FieldLabel>الاسم</FieldLabel><TextInput value={local.name} onChange={(e) => update({ name: e.target.value })} />{isDuplicateName && <div className="text-xs mt-1" style={{ color: "#A34632" }}>يوجد اسم مطابق مسجّل مسبقًا — تأكد أنه ليس تكرارًا لنفس الجهة.</div>}</div>
           <div><FieldLabel>رقم الهاتف</FieldLabel><TextInput value={local.phone} onChange={(e) => update({ phone: e.target.value })} /></div>
         </div>
         <div><FieldLabel>ملاحظات</FieldLabel><TextInput value={local.notes} onChange={(e) => update({ notes: e.target.value })} /></div>
@@ -1982,7 +1985,11 @@ function ContactDetail({ contact, label, icon, onClose, onSave, onDelete, relate
         {relatedProjects != null && (
           <div className="rounded-xl border p-3 flex flex-col gap-2" style={{ borderColor: "var(--card-border)" }}>
             <FieldLabel>مشاريع هذا العميل ({relatedProjects.length})</FieldLabel>
-            <div className="text-xs" style={{ color: "var(--text-muted)" }}>هذا الرصيد لا يشمل دفعات المشاريع، وتظهر دفعات المشاريع في الملخص أدناه.</div>
+            <div className="rounded-lg p-3 flex items-center justify-between" style={{ background: (balance + projectRemaining) > 0 ? "var(--warn-bg)" : "var(--good-bg)" }}>
+              <span className="text-sm" style={{ color: "var(--text-body)" }}>الإجمالي الكلي المستحق (الرصيد + باقي المشاريع)</span>
+              <span className="font-bold text-lg" style={{ color: (balance + projectRemaining) > 0 ? "#A34632" : "#4B6350" }}>{(balance + projectRemaining) > 0 ? fmt(balance + projectRemaining) : "لا يوجد"}</span>
+            </div>
+            <div className="text-xs" style={{ color: "var(--text-muted)" }}>الرصيد اليدوي أعلاه لا يشمل دفعات المشاريع، وتُحتسب دفعات المشاريع في الملخص أدناه بشكل منفصل.</div>
             <div className="grid grid-cols-3 gap-2 text-xs">
               <div className="rounded-lg p-2" style={{ background: "var(--divider)" }}><div style={{ color: "var(--text-muted)" }}>تكلفة المشاريع</div><strong style={{ color: "var(--text-strong)" }}>{fmt(projectTotals.cost)}</strong></div>
               <div className="rounded-lg p-2" style={{ background: "var(--good-bg)" }}><div style={{ color: "var(--text-muted)" }}>مجموع الواصل</div><strong style={{ color: "#4B6350" }}>{fmt(projectTotals.paid)}</strong></div>
@@ -2115,7 +2122,7 @@ function AttendanceTab({ workers, attendance, upsert, remove }) {
 }
 
 // ---------- Reports ----------
-function ReportsTab({ month, setMonth, projects, invoices, expenses, income, attendance, workers, downloadsNs }) {
+function ReportsTab({ month, setMonth, projects, invoices, expenses, income, attendance, workers, customers, suppliers, downloadsNs }) {
   const inMonth = (arr, field) => arr.filter((x) => monthKey(x[field || "date"]) === month);
   const allIncome = getAllProjectIncome(projects, income);
   const mIncome = inMonth(allIncome);
@@ -2140,6 +2147,17 @@ function ReportsTab({ month, setMonth, projects, invoices, expenses, income, att
     absent: monthAttendance.filter((a) => a.workerId === w.id && a.status === "غائب").length,
   })).filter((s) => s.present + s.half + s.absent > 0);
 
+  const customerDebts = customers
+    .map((c) => { const o = getCustomerOutstanding(c, projects, income); return { name: c.name, phone: c.phone, ledger: o.ledger, projectsRemaining: o.projectsRemaining, total: o.total }; })
+    .filter((c) => c.total > 0)
+    .sort((a, b) => b.total - a.total);
+  const supplierDebts = suppliers
+    .map((s) => ({ name: s.name, phone: s.phone, total: contactBalance(s) }))
+    .filter((s) => s.total > 0)
+    .sort((a, b) => b.total - a.total);
+  const totalCustomerDebt = customerDebts.reduce((s, c) => s + c.total, 0);
+  const totalSupplierDebt = supplierDebts.reduce((s, c) => s + c.total, 0);
+
   const exportMonth = async () => {
     if (!window.XLSX) { notify("ميزة التصدير غير متاحة هنا حاليًا."); return; }
     const wb = XLSX.utils.book_new();
@@ -2150,6 +2168,8 @@ function ReportsTab({ month, setMonth, projects, invoices, expenses, income, att
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(completedProjects.map((p) => ({ الزبون: p.customerName, الموقع: p.location, الحالة: p.status, "تاريخ المشروع": p.dateCreated, "تاريخ الإكمال": p.completedAt, الإجمالي: projectCost(p) }))), "مشاريع مكتملة");
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(Array.from(new Map(projects.flatMap((project) => getProjectPayments(project, income).filter((payment) => monthKey(payment.date) === month).map((payment) => [payment.paymentId || payment.id, { الزبون: project.customerName, "معرف المشروع": project.id, "تاريخ الدفعة": payment.date, المبلغ: payment.amount, "وصف الدفعة": payment.description || "" }]))).values())), "دفعات المشاريع");
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(workers.map((w) => { const records = monthAttendance.filter((a) => a.workerId === w.id); return { العامل: w.name, حاضر: records.filter((a) => a.status === "حاضر").length, "نصف يوم": records.filter((a) => a.status === "نصف يوم").length, غائب: records.filter((a) => a.status === "غائب").length }; })), "حضور العمال");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(customerDebts.length ? customerDebts.map((c) => ({ العميل: c.name, الهاتف: c.phone || "", "رصيد يدوي": c.ledger, "باقي مشاريع": c.projectsRemaining, "الإجمالي المستحق": c.total })) : [{ "لا توجد مستحقات": "" }]), "مستحقات العملاء");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(supplierDebts.length ? supplierDebts.map((s) => ({ المورد: s.name, الهاتف: s.phone || "", "المبلغ المستحق": s.total })) : [{ "لا توجد مستحقات": "" }]), "مستحقات للموردين");
     const buf = XLSX.write(wb, { type: "array", bookType: "xlsx" });
     const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
     const filename = `تقرير-${month}.xlsx`;
@@ -2172,6 +2192,49 @@ function ReportsTab({ month, setMonth, projects, invoices, expenses, income, att
         <StatCard icon="trendDown" label="مصاريف الشهر" value={fmt(totalExpenses)} accent="#A34632" />
         <StatCard icon="receipt" label="فواتير الشهر" value={fmt(totalInvoices)} accent="#8A6A32" />
         <StatCard icon={net >= 0 ? "trendUp" : "trendDown"} label="صافي الحركة النقدية" value={fmt(net)} accent={net >= 0 ? "#4B6350" : "#A34632"} />
+      </div>
+
+      <div>
+        <h2 className="text-sm font-semibold mb-3" style={{ color: "var(--text-body)" }}>المستحقات حتى اليوم — عملاء وموردون</h2>
+        <div className="grid grid-cols-2 gap-3 mb-3">
+          <StatCard icon="users" label="إجمالي مستحق على العملاء (لنا)" value={fmt(totalCustomerDebt)} sub={customerDebts.length + " عميل مدين"} accent="#A6673B" />
+          <StatCard icon="briefcase" label="إجمالي مستحق للموردين (علينا)" value={fmt(totalSupplierDebt)} sub={supplierDebts.length + " مورّد له مستحقات"} accent="#5C4A38" />
+        </div>
+        <div className="grid lg:grid-cols-2 gap-4">
+          <div className="rounded-2xl border p-4" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>
+            <h3 className="font-semibold text-sm mb-3" style={{ color: "var(--text-body)" }}>تفصيل مستحقات العملاء</h3>
+            {customerDebts.length === 0 ? <EmptyState icon="users" title="لا توجد مستحقات على العملاء حاليًا" /> : (
+              <div className="flex flex-col divide-y" style={{ borderColor: "var(--divider)" }}>
+                {customerDebts.map((c) => (
+                  <div key={c.name} className="flex items-center justify-between py-2 text-sm" style={{ borderColor: "var(--divider)" }}>
+                    <div>
+                      <div style={{ color: "var(--text-body)" }}>{c.name}</div>
+                      {c.phone && <div className="text-xs" style={{ color: "var(--text-muted)" }}>{c.phone}</div>}
+                    </div>
+                    <span className="font-semibold" style={{ color: "#A34632" }}>{fmt(c.total)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          <div className="rounded-2xl border p-4" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>
+            <h3 className="font-semibold text-sm mb-3" style={{ color: "var(--text-body)" }}>تفصيل مستحقات الموردين</h3>
+            {supplierDebts.length === 0 ? <EmptyState icon="briefcase" title="لا توجد مستحقات للموردين حاليًا" /> : (
+              <div className="flex flex-col divide-y" style={{ borderColor: "var(--divider)" }}>
+                {supplierDebts.map((s) => (
+                  <div key={s.name} className="flex items-center justify-between py-2 text-sm" style={{ borderColor: "var(--divider)" }}>
+                    <div>
+                      <div style={{ color: "var(--text-body)" }}>{s.name}</div>
+                      {s.phone && <div className="text-xs" style={{ color: "var(--text-muted)" }}>{s.phone}</div>}
+                    </div>
+                    <span className="font-semibold" style={{ color: "#A34632" }}>{fmt(s.total)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="text-xs mt-2" style={{ color: "var(--text-muted)" }}>مستحقات العملاء تشمل الرصيد اليدوي + باقي كل مشاريعهم غير المسددة بالكامل. هذه الأرقام لحظية (حتى اليوم) وليست خاصة بالشهر المختار فقط.</div>
       </div>
 
       <div className="grid lg:grid-cols-2 gap-4">
