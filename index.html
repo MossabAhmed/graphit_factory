@@ -846,17 +846,40 @@ function Projects({ projects, onOpen, onNew }) {
   );
 }
 
+function SearchablePicker({ items, value, onSelect, getLabel, getSearchText, placeholder, emptyText = "لا توجد نتائج مطابقة" }) {
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const selected = items.find((item) => item.id === value);
+  const normalizedQuery = normalizeName(query);
+  const filtered = items.filter((item) => !normalizedQuery || normalizeName(getSearchText(item)).includes(normalizedQuery));
+
+  return (
+    <div className="relative">
+      <TextInput
+        value={open ? query : (selected ? getLabel(selected) : "")}
+        placeholder={placeholder}
+        onFocus={() => { setOpen(true); setQuery(""); }}
+        onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
+        onBlur={() => window.setTimeout(() => setOpen(false), 150)}
+      />
+      {open && (
+        <div className="absolute inset-x-0 top-full z-20 mt-1 max-h-56 overflow-y-auto rounded-lg border shadow-lg" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>
+          {filtered.length === 0 ? <div className="px-3 py-2 text-xs" style={{ color: "var(--text-muted)" }}>{emptyText}</div> : filtered.map((item) => (
+            <button key={item.id} type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => { onSelect(item.id); setQuery(""); setOpen(false); }} className="w-full px-3 py-2 text-right text-sm border-b last:border-b-0" style={{ color: "var(--text-body)", borderColor: "var(--divider)" }}>
+              {getLabel(item)}
+            </button>
+          ))}
+        </div>
+      )}
+      {selected && <button type="button" onClick={() => { onSelect(null); setQuery(""); setOpen(false); }} className="absolute left-2 top-1/2 -translate-y-1/2 text-xs" style={{ color: "var(--text-muted)" }}>مسح</button>}
+    </div>
+  );
+}
+
 function CustomerPicker({ customers, customerId, customerName, onSelect, onCreateNew }) {
   const [addingNew, setAddingNew] = useState(false);
   const [newName, setNewName] = useState("");
   const [newPhone, setNewPhone] = useState("");
-
-  const handleChange = (e) => {
-    const val = e.target.value;
-    if (val === "__new__") { setAddingNew(true); setNewName(""); setNewPhone(""); return; }
-    setAddingNew(false);
-    onSelect(val || null);
-  };
 
   const confirmNew = () => {
     if (!newName.trim() || hasDuplicateName(customers, newName)) { notify("اسم العميل موجود مسبقًا أو غير صالح."); return; }
@@ -867,11 +890,8 @@ function CustomerPicker({ customers, customerId, customerName, onSelect, onCreat
 
   return (
     <div className="flex flex-col gap-2">
-      <Select value={addingNew ? "__new__" : (customerId || "")} onChange={handleChange}>
-        <option value="">-- اختر عميلاً مسجلاً --</option>
-        {customers.map((c) => <option key={c.id} value={c.id}>{c.name}{c.phone ? " — " + c.phone : ""}</option>)}
-        <option value="__new__">+ إضافة عميل جديد</option>
-      </Select>
+      {!addingNew && <SearchablePicker items={customers} value={customerId} onSelect={onSelect} placeholder="ابحث باسم العميل أو الهاتف..." getLabel={(c) => c.name + (c.phone ? " — " + c.phone : "")} getSearchText={(c) => [c.name, c.phone].filter(Boolean).join(" ")} />}
+      {!addingNew && <button type="button" onClick={() => { setAddingNew(true); setNewName(""); setNewPhone(""); }} className="text-xs self-start" style={{ color: "var(--accent)" }}>+ إضافة عميل جديد</button>}
       {addingNew && (
         <div className="rounded-lg border p-2.5 flex flex-col gap-2" style={{ borderColor: "var(--card-border)" }}>
           <TextInput placeholder="اسم العميل الجديد" value={newName} onChange={(e) => setNewName(e.target.value)} />
@@ -1535,12 +1555,12 @@ function ProjectMeasurements({ project, update }) {
         <div><FieldLabel>اسم العامل (الذي كال العمل)</FieldLabel><TextInput value={workerName} onChange={(e) => setWorkerName(e.target.value)} placeholder="اسم العامل" /></div>
         <div className="flex flex-col gap-2">
           {entries.map((e, idx) => (
-            <div key={idx} className="grid grid-cols-12 gap-1.5 items-center">
-              <div className="col-span-3"><TextInput list="measure-suggestions" placeholder="البند" value={e.label} onChange={(ev) => setEntry(idx, { label: ev.target.value })} /></div>
-              <div className="col-span-3"><TextInput type="number" placeholder="كمية (م)" value={e.quantity} onChange={(ev) => setEntry(idx, { quantity: ev.target.value })} /></div>
-              <div className="col-span-3"><TextInput type="number" placeholder="سعر الوحدة" value={e.unitPrice} onChange={(ev) => setEntry(idx, { unitPrice: ev.target.value })} /></div>
-              <div className="col-span-2"><TextInput type="number" placeholder="المجموع" value={e.total} onChange={(ev) => setEntry(idx, { total: ev.target.value })} /></div>
-              <div className="col-span-1 flex justify-center">{entries.length > 1 && <button onClick={() => removeRow(idx)} style={{ color: "var(--text-muted)" }}><Icon name="x" size={14} /></button>}</div>
+            <div key={idx} className="grid grid-cols-2 sm:grid-cols-12 gap-1.5 items-center">
+              <div className="col-span-2 sm:col-span-3 min-w-0"><TextInput list="measure-suggestions" placeholder="البند" value={e.label} onChange={(ev) => setEntry(idx, { label: ev.target.value })} /></div>
+              <div className="col-span-1 sm:col-span-3 min-w-0"><TextInput type="number" placeholder="الكمية (م)" value={e.quantity} onChange={(ev) => setEntry(idx, { quantity: ev.target.value })} /></div>
+              <div className="col-span-1 sm:col-span-3 min-w-0"><TextInput type="number" placeholder="سعر الوحدة" value={e.unitPrice} onChange={(ev) => setEntry(idx, { unitPrice: ev.target.value })} /></div>
+              <div className="col-span-1 sm:col-span-2 min-w-0"><TextInput type="number" placeholder="المجموع" value={e.total} onChange={(ev) => setEntry(idx, { total: ev.target.value })} /></div>
+              <div className="col-span-2 sm:col-span-1 flex justify-center">{entries.length > 1 && <button onClick={() => removeRow(idx)} style={{ color: "var(--text-muted)" }}><Icon name="x" size={14} /></button>}</div>
             </div>
           ))}
           <datalist id="measure-suggestions">{["تكس", "سيليكات", "مرمات", "جوتن", "نايلو"].map((s) => <option key={s} value={s} />)}</datalist>
@@ -1849,7 +1869,17 @@ function AddIncomeForm({ onAdd, projects, initialIncome = null }) {
   const submit = () => { if (!positiveNumber(amount)) { notify("المبلغ يجب أن يكون موجبًا."); return; } const proj = projects.find((p) => p.id === projectId); onAdd({ ...initialIncome, id: initialIncome?.id || uid(), paymentId: initialIncome?.paymentId, projectId: projectId || null, customerName: proj ? proj.customerName : customerName.trim(), amount: Number(amount), date, description: description.trim() }); };
   return (
     <div className="flex flex-col gap-3">
-      <div><FieldLabel>المشروع (اختياري)</FieldLabel><Select value={projectId} onChange={(e) => setProjectId(e.target.value)}><option value="">بدون ربط بمشروع</option>{projects.map((p) => <option key={p.id} value={p.id}>{p.customerName} — {p.location}</option>)}</Select></div>
+      <div>
+        <FieldLabel>المشروع (اختياري)</FieldLabel>
+        <SearchablePicker
+          items={projects}
+          value={projectId}
+          onSelect={setProjectId}
+          placeholder="ابحث باسم الزبون أو موقع المشروع..."
+          getLabel={(project) => project.customerName + (project.location ? " — " + project.location : "")}
+          getSearchText={(project) => [project.customerName, project.location, project.phone, project.dateCreated].filter(Boolean).join(" ")}
+        />
+      </div>
       {!projectId && <div><FieldLabel>اسم الزبون</FieldLabel><TextInput value={customerName} onChange={(e) => setCustomerName(e.target.value)} /></div>}
       <div className="grid grid-cols-2 gap-3"><div><FieldLabel>المبلغ</FieldLabel><TextInput type="number" value={amount} onChange={(e) => setAmount(e.target.value)} /></div><div><FieldLabel>التاريخ</FieldLabel><TextInput type="date" value={date} onChange={(e) => setDate(e.target.value)} /></div></div>
       <div><FieldLabel>وصف (اختياري)</FieldLabel><TextInput value={description} onChange={(e) => setDescription(e.target.value)} /></div>
