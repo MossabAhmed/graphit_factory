@@ -211,6 +211,58 @@ const upsertSupplierDebt = (supplier, transaction) => {
     transactions: exists ? transactions.map((item) => item.id === transaction.id ? { ...item, ...transaction } : item) : [transaction, ...transactions],
   };
 };
+const getSupplierDebtInvoices = (supplierId, invoices = []) => invoices
+  .filter((invoice) => invoice.supplierId === supplierId && invoice.debtTransactionId && positiveNumber(invoice.amount))
+  .sort((a, b) => (a.date || '').localeCompare(b.date || '') || String(a.id).localeCompare(String(b.id)));
+const getSupplierStatement = (supplier, invoices = []) => {
+  const debtInvoices = getSupplierDebtInvoices(supplier.id, invoices);
+  const transactions = supplier.transactions || [];
+  const paidByInvoice = new Map();
+  let allocatedTotal = 0;
+  transactions.filter((transaction) => transaction.supplierPayment && Array.isArray(transaction.allocations)).forEach((transaction) => {
+    transaction.allocations.forEach((allocation) => {
+      const amount = Math.max(0, Number(allocation.amount || 0));
+      if (!amount || !debtInvoices.some((invoice) => invoice.id === allocation.invoiceId)) return;
+      paidByInvoice.set(allocation.invoiceId, (paidByInvoice.get(allocation.invoiceId) || 0) + amount);
+      allocatedTotal += amount;
+    });
+  });
+  const rows = debtInvoices.map((invoice) => ({
+    invoice,
+    paid: Math.min(Number(invoice.amount || 0), paidByInvoice.get(invoice.id) || 0),
+    remaining: Math.max(0, Number(invoice.amount || 0) - Math.min(Number(invoice.amount || 0), paidByInvoice.get(invoice.id) || 0)),
+  }));
+  const supplierPaymentTotal = transactions
+    .filter((transaction) => transaction.supplierPayment)
+    .reduce((sum, transaction) => sum + Math.max(0, Number(transaction.amount || 0)), 0);
+  let unallocatedCredits = transactions
+    .filter((transaction) => transaction.type === "credit" && !transaction.supplierPayment)
+    .reduce((sum, transaction) => sum + Math.max(0, Number(transaction.amount || 0)), 0) + Math.max(0, supplierPaymentTotal - allocatedTotal);
+  rows.forEach((row) => {
+    const extra = Math.min(row.remaining, unallocatedCredits);
+    row.paid += extra;
+    row.remaining -= extra;
+    unallocatedCredits -= extra;
+  });
+  const invoiceDebt = rows.reduce((sum, row) => sum + Number(row.remaining || 0), 0);
+  const invoicePaid = rows.reduce((sum, row) => sum + Number(row.paid || 0), 0);
+  const invoiceDebtTransactionIds = new Set(debtInvoices.map((invoice) => invoice.debtTransactionId));
+  const manualBalance = transactions
+    .filter((transaction) => !invoiceDebtTransactionIds.has(transaction.id) && !transaction.supplierPayment && transaction.type === "debit")
+    .reduce((sum, transaction) => sum + Math.max(0, Number(transaction.amount || 0)), 0);
+  const paymentExcess = unallocatedCredits;
+  const net = invoiceDebt + manualBalance - paymentExcess;
+  return { rows, invoiceDebt, invoicePaid, manualBalance, paymentExcess, owed: Math.max(0, net), credit: Math.max(0, -net), totalInvoices: debtInvoices.reduce((sum, invoice) => sum + Number(invoice.amount || 0), 0) };
+};
+const allocateSupplierPayment = (supplier, invoices, amount) => {
+  const statement = getSupplierStatement(supplier, invoices);
+  let remaining = Number(amount || 0);
+  return statement.rows.filter((row) => row.remaining > 0).map((row) => {
+    const allocated = Math.min(row.remaining, remaining);
+    remaining -= allocated;
+    return allocated > 0 ? { invoiceId: row.invoice.id, amount: allocated } : null;
+  }).filter(Boolean);
+};
 
 const PRODUCT_TYPES = ["تكس", "سيليكات", "كلاهما"];
 const STATUSES = ["جديد", "قيد التنفيذ", "مكتمل"];
@@ -701,7 +753,7 @@ function FactoryApp({ organizationId, organizationCode, email, onSignOut }) {
         {tab === "finance" && <FinanceTab expenses={expenses} income={income} projects={projects} upsert={upsert} remove={remove} />}
         {tab === "accounts" && (
           <AccountsTab sub={accountsSub} setSub={setAccountsSub}
-            customers={customers} suppliers={suppliers} workers={workers} upsert={upsert} remove={remove}
+            customers={customers} suppliers={suppliers} workers={workers} invoices={invoices} upsert={upsert} remove={remove}
             projects={projects} income={income} onOpenProject={(id) => setOpenProjectId(id)} />
         )}
         {tab === "attendance" && <AttendanceTab workers={workers} attendance={attendance} upsert={upsert} remove={remove} />}
@@ -1748,7 +1800,7 @@ function AddInvoiceForm({ onAdd, projects, suppliers, upsert, initialInvoice = n
       </div>
       {supplierId && (
         <label className="flex items-center gap-2 text-xs" style={{ color: "var(--text-body)" }}>
-          <input type="checkbox" checked={markAsDebt} onChange={(e) => setMarkAsDebt(e.target.checked)} /> لم يتم الدفع بعد — أضف المبلغ كدين على هذا المورد
+          <input type="checkbox" checked={markAsDebt} onChange={(e) => setMarkAsDebt(e.target.checked)} /> الفاتورة غير مدفوعة — سجّل قيمتها كمستحق علينا للمورد
         </label>
       )}
 
@@ -1897,7 +1949,7 @@ function AddIncomeForm({ onAdd, projects, initialIncome = null }) {
 }
 
 // ---------- Accounts (customers / workers / suppliers ledger) ----------
-function AccountsTab({ sub, setSub, customers, suppliers, workers, upsert, remove, projects, income, onOpenProject }) {
+function AccountsTab({ sub, setSub, customers, suppliers, workers, invoices, upsert, remove, projects, income, onOpenProject }) {
   const KINDS = { customers: { label: "عملاء", icon: "users", collection: "customers", data: customers }, workers: { label: "عمال", icon: "user", collection: "workers", data: workers }, suppliers: { label: "موردون", icon: "briefcase", collection: "suppliers", data: suppliers } };
   const current = KINDS[sub];
   return (
@@ -1910,12 +1962,12 @@ function AccountsTab({ sub, setSub, customers, suppliers, workers, upsert, remov
           </button>
         ))}
       </div>
-      <ContactsList kind={sub} label={current.label} icon={current.icon} collection={current.collection} data={current.data} upsert={upsert} remove={remove} projects={projects} income={income} onOpenProject={onOpenProject} />
+      <ContactsList kind={sub} label={current.label} icon={current.icon} collection={current.collection} data={current.data} invoices={invoices} upsert={upsert} remove={remove} projects={projects} income={income} onOpenProject={onOpenProject} />
     </div>
   );
 }
 
-function ContactsList({ kind, label, icon, collection, data, upsert, remove, projects, income, onOpenProject }) {
+function ContactsList({ kind, label, icon, collection, data, invoices, upsert, remove, projects, income, onOpenProject }) {
   const [query, setQuery] = useState("");
   const [showAdd, setShowAdd] = useState(false);
   const [openId, setOpenId] = useState(null);
@@ -1943,8 +1995,8 @@ function ContactsList({ kind, label, icon, collection, data, upsert, remove, pro
                 </div>
                 {c.phone && <div className="text-xs flex items-center gap-1" style={{ color: "var(--text-muted)" }}><Icon name="phone" size={11} /> {c.phone}</div>}
                 <div className="pt-2 border-t" style={{ borderColor: "var(--divider)" }}>
-                  {bal > 0 && <Badge bg="var(--warn-bg)" fg="#A34632">عليه {fmt(bal)}</Badge>}
-                  {bal < 0 && <Badge bg="var(--good-bg)" fg="#4B6350">له {fmt(-bal)}</Badge>}
+                  {bal > 0 && <Badge bg="var(--warn-bg)" fg="#A34632">{kind === "suppliers" ? "علينا" : "عليه"} {fmt(bal)}</Badge>}
+                  {bal < 0 && <Badge bg="var(--good-bg)" fg="#4B6350">{kind === "suppliers" ? "لنا" : "له"} {fmt(-bal)}</Badge>}
                   {bal === 0 && <Badge bg="var(--divider)" fg="var(--text-muted)">لا يوجد رصيد</Badge>}
                 </div>
               </button>
@@ -1953,7 +2005,7 @@ function ContactsList({ kind, label, icon, collection, data, upsert, remove, pro
         </div>
       )}
       {showAdd && <Modal title={`إضافة ${label.replace(/ون$|اء$/, "")}`} onClose={() => setShowAdd(false)}><AddContactForm existing={data} onAdd={(c) => { upsert(collection, c); setShowAdd(false); }} /></Modal>}
-      {open && <ContactDetail contact={open} label={label} icon={icon} onClose={() => setOpenId(null)} onSave={(c) => upsert(collection, c)} onDelete={() => { remove(collection, open.id); setOpenId(null); }} relatedProjects={relatedProjects} income={income} onOpenProject={onOpenProject} existing={data.filter((d) => d.id !== open.id)} />}
+      {open && <ContactDetail contact={open} label={label} icon={icon} invoices={invoices} onClose={() => setOpenId(null)} onSave={(c) => upsert(collection, c)} onDelete={() => { remove(collection, open.id); setOpenId(null); }} relatedProjects={relatedProjects} income={income} onOpenProject={onOpenProject} existing={data.filter((d) => d.id !== open.id)} />}
     </div>
   );
 }
@@ -1977,17 +2029,21 @@ function AddContactForm({ onAdd, existing = [] }) {
   );
 }
 
-function ContactDetail({ contact, label, icon, onClose, onSave, onDelete, relatedProjects, income = [], onOpenProject, existing = [] }) {
+function ContactDetail({ contact, label, icon, invoices = [], onClose, onSave, onDelete, relatedProjects, income = [], onOpenProject, existing = [] }) {
   const [local, setLocal] = useState(contact);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [txType, setTxType] = useState("debit");
   const [txAmount, setTxAmount] = useState("");
   const [txNote, setTxNote] = useState("");
   const [pendingTxDelete, setPendingTxDelete] = useState(null);
+  const [supplierPaymentAmount, setSupplierPaymentAmount] = useState("");
+  const [supplierPaymentDate, setSupplierPaymentDate] = useState(todayISO());
+  const [supplierPaymentNote, setSupplierPaymentNote] = useState("");
   useEffect(() => setLocal(contact), [contact.id]);
   const update = (patch) => { const next = { ...local, ...patch }; setLocal(next); onSave(next); };
   const balance = contactBalance(local);
   const transactions = local.transactions || [];
+  const supplierStatement = label === "موردون" ? getSupplierStatement(local, invoices) : null;
   const isDuplicateName = hasDuplicateName(existing, local.name);
   const projectTotals = (relatedProjects || []).reduce((summary, project) => {
     const cost = projectCost(project);
@@ -2003,6 +2059,14 @@ function ContactDetail({ contact, label, icon, onClose, onSave, onDelete, relate
     setTxAmount(""); setTxNote("");
   };
   const removeTx = (id) => { update({ transactions: transactions.filter((t) => t.id !== id) }); setPendingTxDelete(null); };
+  const addSupplierPayment = () => {
+    if (!positiveNumber(supplierPaymentAmount)) { notify("أدخل مبلغ سداد موجبًا."); return; }
+    const amount = Number(supplierPaymentAmount);
+    const payment = { id: uid(), date: supplierPaymentDate || todayISO(), type: "credit", amount, note: supplierPaymentNote.trim() || "سداد عام للمورد", supplierPayment: true, allocations: allocateSupplierPayment(local, invoices, amount) };
+    update({ transactions: [payment, ...transactions] });
+    setSupplierPaymentAmount(""); setSupplierPaymentNote(""); setSupplierPaymentDate(todayISO());
+    notify(payment.allocations.length ? "تم تسجيل السداد وتوزيعه على أقدم الفواتير." : "تم تسجيل السداد كرصيد لنا عند المورد.", "success");
+  };
 
   return (
     <Modal title={local.name} onClose={onClose} wide>
@@ -2014,11 +2078,34 @@ function ContactDetail({ contact, label, icon, onClose, onSave, onDelete, relate
         <div><FieldLabel>ملاحظات</FieldLabel><TextInput value={local.notes} onChange={(e) => update({ notes: e.target.value })} /></div>
 
         <div className="rounded-xl p-3 flex items-center justify-between" style={{ background: balance > 0 ? "var(--warn-bg)" : balance < 0 ? "var(--good-bg)" : "var(--divider)" }}>
-          <span className="text-sm" style={{ color: "var(--text-body)" }}>الرصيد اليدوي للعميل</span>
+          <span className="text-sm" style={{ color: "var(--text-body)" }}>{label === "موردون" ? "الرصيد اليدوي للمورد" : "الرصيد اليدوي للعميل"}</span>
           <span className="font-bold text-lg" style={{ color: balance > 0 ? "#A34632" : balance < 0 ? "#4B6350" : "var(--text-strong)" }}>
-            {balance === 0 ? "لا يوجد" : balance > 0 ? `عليه ${fmt(balance)}` : `له ${fmt(-balance)}`}
+            {balance === 0 ? "لا يوجد" : balance > 0 ? (label === "موردون" ? `علينا ${fmt(balance)}` : `عليه ${fmt(balance)}`) : (label === "موردون" ? `لنا ${fmt(-balance)}` : `له ${fmt(-balance)}`)}
           </span>
         </div>
+
+        {label === "موردون" && supplierStatement && (
+          <div className="rounded-xl border p-3 flex flex-col gap-3" style={{ borderColor: "var(--card-border)" }}>
+            <FieldLabel>الحساب العام للمورد</FieldLabel>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+              <div className="rounded-lg p-2" style={{ background: "var(--divider)" }}><div style={{ color: "var(--text-muted)" }}>إجمالي الفواتير الآجلة</div><strong style={{ color: "var(--text-strong)" }}>{fmt(supplierStatement.totalInvoices)}</strong></div>
+              <div className="rounded-lg p-2" style={{ background: "var(--good-bg)" }}><div style={{ color: "var(--text-muted)" }}>المدفوع</div><strong style={{ color: "#4B6350" }}>{fmt(supplierStatement.invoicePaid)}</strong></div>
+              <div className="rounded-lg p-2" style={{ background: supplierStatement.owed ? "var(--warn-bg)" : "var(--good-bg)" }}><div style={{ color: "var(--text-muted)" }}>مستحق علينا</div><strong style={{ color: supplierStatement.owed ? "#A34632" : "#4B6350" }}>{fmt(supplierStatement.owed)}</strong></div>
+              <div className="rounded-lg p-2" style={{ background: supplierStatement.credit ? "var(--good-bg)" : "var(--divider)" }}><div style={{ color: "var(--text-muted)" }}>مستحق لنا</div><strong style={{ color: "#4B6350" }}>{fmt(supplierStatement.credit)}</strong></div>
+            </div>
+            <div className="rounded-lg border p-3 flex flex-col gap-2" style={{ borderColor: "var(--card-border)" }}>
+              <div className="text-sm font-medium" style={{ color: "var(--text-body)" }}>تسجيل سداد عام</div>
+              <div className="grid grid-cols-2 gap-2"><TextInput type="number" placeholder="مبلغ السداد" value={supplierPaymentAmount} onChange={(e) => setSupplierPaymentAmount(e.target.value)} /><TextInput type="date" value={supplierPaymentDate} onChange={(e) => setSupplierPaymentDate(e.target.value)} /></div>
+              <TextInput placeholder="ملاحظة (اختياري)" value={supplierPaymentNote} onChange={(e) => setSupplierPaymentNote(e.target.value)} />
+              <div className="text-xs" style={{ color: "var(--text-muted)" }}>يوزّع السداد تلقائيًا على أقدم الفواتير غير المسددة، وأي زيادة تصبح رصيدًا لنا عند المورد.</div>
+              <PrimaryButton onClick={addSupplierPayment} full disabled={!supplierPaymentAmount}><Icon name="plus" size={16} /> تسجيل السداد</PrimaryButton>
+            </div>
+            <div className="flex flex-col gap-1">
+              <div className="text-xs font-medium" style={{ color: "var(--text-muted)" }}>الفواتير الآجلة</div>
+              {supplierStatement.rows.length === 0 ? <div className="text-xs" style={{ color: "var(--text-muted)" }}>لا توجد فواتير آجلة لهذا المورد.</div> : supplierStatement.rows.map((row) => <div key={row.invoice.id} className="flex items-center justify-between text-xs py-1.5 border-b" style={{ borderColor: "var(--divider)" }}><span>#{row.invoice.invoiceNumber || row.invoice.id} · {row.invoice.date}</span><span style={{ color: row.remaining ? "#A34632" : "#4B6350" }}>{row.remaining ? `متبقي ${fmt(row.remaining)}` : "مسددة"}</span></div>)}
+            </div>
+          </div>
+        )}
 
         {relatedProjects != null && (
           <div className="rounded-xl border p-3 flex flex-col gap-2" style={{ borderColor: "var(--card-border)" }}>
@@ -2058,9 +2145,9 @@ function ContactDetail({ contact, label, icon, onClose, onSave, onDelete, relate
         )}
 
         <div className="rounded-xl border p-3 flex flex-col gap-2" style={{ borderColor: "var(--card-border)" }}>
-          <FieldLabel>تسجيل حركة جديدة</FieldLabel>
+          <FieldLabel>{label === "موردون" ? "حركة يدوية (غير مرتبطة بفاتورة)" : "تسجيل حركة جديدة"}</FieldLabel>
           <div className="grid grid-cols-2 gap-2">
-            <Select value={txType} onChange={(e) => setTxType(e.target.value)}><option value="debit">زيادة دين عليه</option><option value="credit">تسديد / دفعة منه</option></Select>
+            <Select value={txType} onChange={(e) => setTxType(e.target.value)}><option value="debit">{label === "موردون" ? "زيادة مستحق علينا" : "زيادة دين عليه"}</option><option value="credit">{label === "موردون" ? "رصيد لنا / تسوية" : "تسديد / دفعة منه"}</option></Select>
             <TextInput type="number" placeholder="المبلغ" value={txAmount} onChange={(e) => setTxAmount(e.target.value)} />
           </div>
           <TextInput placeholder="ملاحظة (اختياري)" value={txNote} onChange={(e) => setTxNote(e.target.value)} />
@@ -2190,11 +2277,12 @@ function ReportsTab({ month, setMonth, projects, invoices, expenses, income, att
     .filter((c) => c.total > 0)
     .sort((a, b) => b.total - a.total);
   const supplierDebts = suppliers
-    .map((s) => ({ name: s.name, phone: s.phone, total: contactBalance(s) }))
+    .map((s) => { const statement = getSupplierStatement(s, invoices); return { name: s.name, phone: s.phone, total: statement.owed, credit: statement.credit }; })
     .filter((s) => s.total > 0)
     .sort((a, b) => b.total - a.total);
   const totalCustomerDebt = customerDebts.reduce((s, c) => s + c.total, 0);
   const totalSupplierDebt = supplierDebts.reduce((s, c) => s + c.total, 0);
+  const totalSupplierCredit = suppliers.reduce((sum, supplier) => sum + getSupplierStatement(supplier, invoices).credit, 0);
 
   const exportMonth = async () => {
     if (!window.XLSX) { notify("ميزة التصدير غير متاحة هنا حاليًا."); return; }
@@ -2234,9 +2322,10 @@ function ReportsTab({ month, setMonth, projects, invoices, expenses, income, att
 
       <div>
         <h2 className="text-sm font-semibold mb-3" style={{ color: "var(--text-body)" }}>المستحقات حتى اليوم — عملاء وموردون</h2>
-        <div className="grid grid-cols-2 gap-3 mb-3">
+        <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 mb-3">
           <StatCard icon="users" label="إجمالي مستحق على العملاء (لنا)" value={fmt(totalCustomerDebt)} sub={customerDebts.length + " عميل مدين"} accent="#A6673B" />
           <StatCard icon="briefcase" label="إجمالي مستحق للموردين (علينا)" value={fmt(totalSupplierDebt)} sub={supplierDebts.length + " مورّد له مستحقات"} accent="#5C4A38" />
+          <StatCard icon="wallet" label="إجمالي مستحق لنا من الموردين" value={fmt(totalSupplierCredit)} sub="دفعات زائدة أو أرصدة دائنة" accent="#4B6350" />
         </div>
         <div className="grid lg:grid-cols-2 gap-4">
           <div className="rounded-2xl border p-4" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>
