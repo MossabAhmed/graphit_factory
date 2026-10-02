@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>مصنع التكس والسيليكات — إدارة المحاسبة</title>
+<title>شركة الشرق للطلاء الخارجي</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800&family=El+Messiri:wght@500;600;700&display=swap" rel="stylesheet">
@@ -111,12 +111,10 @@ const contactBalance = (c) => (c.transactions || []).reduce((s, t) => s + (t.typ
 const getCustomerProjects = (customer, projects) => projects.filter((p) => p.customerId === customer.id || (!p.customerId && p.customerName === customer.name));
 const getCustomerOutstanding = (customer, projects, income) => {
   const ledger = contactBalance(customer);
-  const projectsRemaining = getCustomerProjects(customer, projects).reduce((sum, project) => {
-    const cost = projectCost(project);
-    const paid = getProjectPayments(project, income).reduce((s, payment) => s + Number(payment.amount || 0), 0);
-    return sum + Math.max(0, cost - paid);
-  }, 0);
-  return { ledger, projectsRemaining, total: ledger + projectsRemaining };
+  const sums = getCustomerProjects(customer, projects).map((project) => getProjectSummary(project, income));
+  const projectsRemaining = sums.reduce((sum, summary) => sum + summary.remaining, 0);
+  const projectsSurplus = sums.reduce((sum, summary) => sum + summary.surplus, 0);
+  return { ledger, projectsRemaining, projectsSurplus, total: ledger + projectsRemaining - projectsSurplus };
 };
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[ch]));
 function numberToArabicWords(value) {
@@ -184,6 +182,16 @@ const getProjectPayments = (project, income = []) => {
   return Array.from(unique.values());
 };
 const projectCost = (project) => (project.measurements || []).reduce((sum, measurement) => sum + Number(measurement.totalAmount || 0), 0);
+const getProjectSummary = (project, income = []) => {
+  const cost = projectCost(project);
+  const paid = getProjectPayments(project, income).reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
+  const waived = Math.min(cost, Math.max(0, Number(project.waivedAmount || 0)));
+  const completed = project.status === "مكتمل";
+  const hasMeasure = (project.measurements || []).length > 0;
+  const net = Math.round((cost - waived - paid) * 1000) / 1000;
+  const extra = Math.max(0, -net);
+  return { cost, paid, waived, completed, hasMeasure, remaining: Math.max(0, net), surplus: completed ? extra : 0, advance: completed ? 0 : extra, settled: completed && hasMeasure && net <= 0 };
+};
 const getUniqueIncome = (income = []) => {
   const unique = new Map();
   income.forEach((entry) => {
@@ -1013,448 +1021,36 @@ function NewProjectModal({ onClose, onCreate, customers, upsert }) {
 }
 
 // ---------- Project detail ----------
-function printProjectInvoice(project) {
-  const measurements = project.measurements || [];
-
-  const rows = measurements.flatMap((measurement) =>
-    (measurement.entries || []).map((entry) => ({
-      date: measurement.date || "",
-      label: entry.label || "",
-      quantity: Number(entry.quantity || 0),
-      unitPrice: Number(entry.unitPrice || 0),
-      total: Number(entry.total || 0),
-    }))
-  );
-
-  const total = rows.reduce((sum, row) => sum + row.total, 0);
-
-  const invoiceNumber =
-    String(project.id || "").replace(/[^0-9]/g, "").slice(-6) || "000001";
-
-  const projectDate = project.dateCreated || todayISO();
-
-  const rowsHtml = rows.length
-    ? rows
-        .map(
-          (row, index) => `
-            <tr>
-              <td>${index + 1}</td>
-              <td class="item-name">${escapeHtml(row.label)}</td>
-              <td>${fmt(row.quantity)}</td>
-              <td>${fmt(row.unitPrice)}</td>
-              <td>${fmt(row.total)}</td>
-            </tr>
-          `
-        )
-        .join("")
-    : `
-        <tr>
-          <td colspan="5" class="empty-row">
-            لا توجد قياسات نهائية مسجلة
-          </td>
-        </tr>
-      `;
-
-  const printWindow = window.open(
-    "",
-    "_blank",
-    "width=900,height=1100"
-  );
-
-  if (!printWindow) {
-    notify("يرجى السماح بالنوافذ المنبثقة لطباعة الفاتورة.");
-    return;
-  }
-
-  const printHtml = `
-<!doctype html>
-<html lang="ar" dir="rtl">
-<head>
-  <meta charset="UTF-8" />
-  <title>فاتورة نهائية - ${escapeHtml(project.customerName)}</title>
-
-  <style>
-    @page {
-      size: A4 portrait;
-      margin: 10mm;
-    }
-
-    * {
-      box-sizing: border-box;
-    }
-
-    body {
-      margin: 0;
-      background: #ffffff;
-      color: #111111;
-      font-family: Arial, Tahoma, sans-serif;
-      direction: rtl;
-      font-size: 13px;
-    }
-
-    .invoice-page {
-      width: 100%;
-      min-height: 270mm;
-      padding: 10mm 9mm 8mm;
-      position: relative;
-    }
-
-    .company-header {
-      text-align: center;
-      border-bottom: 2px solid #222;
-      padding-bottom: 12px;
-      margin-bottom: 14px;
-    }
-
-    .company-name {
-      font-size: 23px;
-      font-weight: 900;
-      letter-spacing: 0.2px;
-    }
-
-    .company-subtitle {
-      font-size: 13px;
-      font-weight: bold;
-      color: #333;
-      margin-top: 4px;
-    }
-
-    .header-meta {
-      margin-top: 10px;
-      font-size: 11.5px;
-      color: #444;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      flex-wrap: wrap;
-      gap: 8px;
-    }
-
-    .header-meta .meta-divider {
-      color: #bbb;
-    }
-
-    .document-title {
-      margin: 0 0 14px;
-      background: #555;
-      color: #fff;
-      text-align: center;
-      padding: 9px 10px;
-      font-size: 17px;
-      font-weight: bold;
-      letter-spacing: 0.3px;
-      border-radius: 4px;
-    }
-
-    .customer-box {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      border: 1.5px solid #222;
-      border-radius: 9px;
-      overflow: hidden;
-      margin-bottom: 14px;
-    }
-
-    .customer-cell {
-      min-height: 78px;
-      padding: 10px 14px;
-      line-height: 2;
-      font-size: 13px;
-    }
-
-    .customer-cell:first-child {
-      border-left: 1px solid #444;
-    }
-
-    .customer-line {
-      display: flex;
-      justify-content: space-between;
-      gap: 14px;
-      border-bottom: 1px dotted #999;
-    }
-
-    .customer-line:last-child {
-      border-bottom: 0;
-    }
-
-    .customer-label {
-      font-weight: bold;
-      white-space: nowrap;
-    }
-
-    .customer-value {
-      flex: 1;
-      text-align: right;
-      font-weight: bold;
-    }
-
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      table-layout: fixed;
-      font-size: 12px;
-    }
-
-    th,
-    td {
-      border: 1px solid #222;
-      padding: 8px 5px;
-      text-align: center;
-      vertical-align: middle;
-    }
-
-    th {
-      background: #d9d9d9;
-      font-weight: bold;
-      height: 34px;
-    }
-
-    th:nth-child(1) {
-      width: 8%;
-    }
-
-    th:nth-child(2) {
-      width: 43%;
-    }
-
-    th:nth-child(3) {
-      width: 15%;
-    }
-
-    th:nth-child(4) {
-      width: 15%;
-    }
-
-    th:nth-child(5) {
-      width: 19%;
-    }
-
-    td {
-      height: 34px;
-    }
-
-    .item-name {
-      text-align: right;
-      padding-right: 10px;
-      word-break: break-word;
-    }
-
-    .empty-row {
-      height: 55px;
-      color: #555;
-    }
-
-    .summary-box {
-      border: 1.5px solid #222;
-      border-radius: 9px;
-      margin-top: 14px;
-      padding: 14px 18px;
-      min-height: 92px;
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 16px;
-      font-size: 13px;
-    }
-
-    .summary-right {
-      line-height: 2.1;
-    }
-
-    .summary-right strong {
-      display: inline-block;
-      min-width: 110px;
-    }
-
-    .grand-total {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      border-bottom: 1px solid #222;
-      padding-bottom: 10px;
-      font-size: 17px;
-      font-weight: 900;
-    }
-
-    .grand-total-value {
-      font-size: 22px;
-      direction: ltr;
-    }
-
-    .signature-area {
-      margin-top: 30px;
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 35px;
-      text-align: center;
-      font-size: 12px;
-    }
-
-    .signature-line {
-      margin-top: 34px;
-      border-top: 1px solid #222;
-      padding-top: 6px;
-    }
-
-    .footer {
-      position: absolute;
-      bottom: 6mm;
-      left: 9mm;
-      right: 9mm;
-      border-top: 1px solid #222;
-      padding-top: 8px;
-      text-align: center;
-      font-size: 11.5px;
-      font-weight: bold;
-      color: #333;
-    }
-
-    @media print {
-      body {
-        background: #fff;
-      }
-
-      .invoice-page {
-        min-height: 270mm;
-      }
-    }
-  </style>
-</head>
-
-<body>
-  <main class="invoice-page">
-
-    <header class="company-header">
-      <div class="company-name">شركة الشرق الكبرى</div>
-      <div class="company-subtitle">للطلاء الخارجي والعوازل</div>
-      <div class="header-meta">
-        <span>ليبيا - طرابلس - عين زارة - بجانب شيل فرحات</span>
-        <span class="meta-divider">|</span>
-        <span>التاريخ: ${escapeHtml(projectDate)}</span>
-        <span class="meta-divider">|</span>
-        <span>رقم الفاتورة: ${invoiceNumber}</span>
-      </div>
-    </header>
-
-    <div class="document-title">
-      فاتورة القياس النهائي
-    </div>
-
-    <section class="customer-box">
-      <div class="customer-cell">
-        <div class="customer-line">
-          <span class="customer-label">الزبون</span>
-          <span class="customer-value">
-            ${escapeHtml(project.customerName || "غير محدد")}
-          </span>
-        </div>
-
-        <div class="customer-line">
-          <span class="customer-label">الهاتف</span>
-          <span class="customer-value">
-            ${escapeHtml(project.phone || "غير محدد")}
-          </span>
-        </div>
-      </div>
-
-      <div class="customer-cell">
-        <div class="customer-line">
-          <span class="customer-label">العنوان</span>
-          <span class="customer-value">
-            ${escapeHtml(project.location || "غير محدد")}
-          </span>
-        </div>
-
-        <div class="customer-line">
-          <span class="customer-label">نوع المنتج</span>
-          <span class="customer-value">
-            ${escapeHtml(project.productType || "غير محدد")}
-          </span>
-        </div>
-      </div>
-    </section>
-
-    <table>
-      <thead>
-        <tr>
-          <th>ت</th>
-          <th>اسم بند القياس النهائي</th>
-          <th>الكمية</th>
-          <th>سعر الوحدة</th>
-          <th>الإجمالي</th>
-        </tr>
-      </thead>
-
-      <tbody>
-        ${rowsHtml}
-      </tbody>
-    </table>
-
-    <section class="summary-box">
-      <div class="summary-right">
-        <div>
-          <strong>الإجمالي كتابةً:</strong>
-          ${escapeHtml(numberToArabicWords(total))} دينار ليبي فقط لا غير
-        </div>
-
-        <div>
-          <strong>طريقة السداد:</strong>
-          حسب الاتفاق
-        </div>
-
-        <div>
-          <strong>ملاحظات:</strong>
-          ${escapeHtml(project.notes || "لا توجد ملاحظات")}
-        </div>
-      </div>
-
-      <div>
-        <div class="grand-total">
-          <span>الإجمالي</span>
-          <span class="grand-total-value">${fmt(total)}</span>
-        </div>
-
-        <div class="signature-area">
-          <div>
-            إعداد
-            <div class="signature-line">التوقيع</div>
-          </div>
-
-          <div>
-            اعتماد
-            <div class="signature-line">التوقيع</div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <footer class="footer">
-      شركة الشرق الكبرى — شكرًا لتعاملكم معنا
-    </footer>
-
-  </main>
-</body>
-</html>
-`;
-
-  printWindow.document.open();
-  printWindow.document.write(printHtml);
-  printWindow.document.close();
-
+function printProjectInvoice(project, income = []) {
+  const sm = getProjectSummary(project, income);
+  const rows = (project.measurements || []).flatMap((measurement) => (measurement.entries || []).map((entry) => ({ label: entry.label || "", quantity: Number(entry.quantity || 0), unitPrice: Number(entry.unitPrice || 0), total: Number(entry.total || 0) })));
+  const invoiceNumber = String(project.id || "").replace(/[^0-9]/g, "").slice(-6) || "000001";
+  const rowsHtml = rows.length ? rows.map((row, index) => `<tr><td>${index + 1}</td><td class="item-name">${escapeHtml(row.label)}</td><td>${fmt(row.quantity)}</td><td>${fmt(row.unitPrice)}</td><td class="num">${fmt(row.total)}</td></tr>`).join("") : `<tr><td colspan="5" class="empty-row">لا توجد قياسات نهائية مسجلة</td></tr>`;
+  const statusText = sm.remaining > 0 ? "المتبقي على الزبون" : sm.surplus > 0 ? "رصيد للزبون" : "الحالة";
+  const statusValue = sm.remaining > 0 ? fmt(sm.remaining) : sm.surplus > 0 ? fmt(sm.surplus) : sm.settled ? "خالص" : "بانتظار الكيل";
+  const printWindow = window.open("", "_blank", "width=900,height=1100");
+  if (!printWindow) { notify("يرجى السماح بالنوافذ المنبثقة لطباعة الفاتورة."); return; }
+  const printHtml = `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="UTF-8" /><title>فاتورة - ${escapeHtml(project.customerName)}</title><style>
+    @page{size:A4 portrait;margin:0}*{box-sizing:border-box;-webkit-print-color-adjust:exact;print-color-adjust:exact}body{margin:0;font-family:Arial,Tahoma,sans-serif;color:#1f1b16;font-size:13px;background:#fff}.page{width:210mm;min-height:297mm;padding:0 14mm 18mm;position:relative}.top{height:9mm;background:#7a4423;margin:0 -14mm 8mm}.head{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;border-bottom:2px solid #7a4423;padding-bottom:12px}.brand{display:flex;gap:12px;align-items:center}.logo{width:54px;height:54px;border-radius:14px;background:#7a4423;color:#fff;display:flex;align-items:center;justify-content:center;font-size:26px;font-weight:800}.co-name{font-size:22px;font-weight:800;color:#7a4423}.co-sub{font-size:12px;font-weight:600;color:#6b645b}.addr{font-size:11px;color:#6b645b;margin-top:3px}.meta{border:1px solid #e3dbd0;border-radius:10px;overflow:hidden;min-width:190px}.meta div{display:flex;justify-content:space-between;gap:12px;padding:6px 10px;font-size:12px}.meta div+div{border-top:1px solid #e3dbd0}.meta b{color:#7a4423}.title{text-align:center;margin:14px 0;color:#7a4423;font-size:17px;font-weight:800}.title span{display:inline-block;padding:4px 28px;border:1.5px solid #7a4423;border-radius:30px;background:#f5ece3}.info{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px}.cell{border:1px solid #e3dbd0;border-radius:10px;padding:8px 12px;background:#fcfaf7}.row{display:flex;justify-content:space-between;gap:10px;padding:3px 0}.row+.row{border-top:1px dashed #e3dbd0}.k{color:#6b645b;font-size:11.5px}.v{font-weight:700;text-align:left}table{width:100%;border-collapse:separate;border-spacing:0;border:1px solid #e3dbd0;border-radius:10px;overflow:hidden}th{background:#7a4423;color:#fff;padding:9px 6px;font-size:12px}td{padding:8px 6px;text-align:center;border-top:1px solid #e3dbd0}tbody tr:nth-child(even) td{background:#fbf8f4}.item-name{text-align:right;padding-right:12px;font-weight:600}.num{font-weight:800}.empty-row{color:#6b645b;padding:22px}th:nth-child(1){width:8%}th:nth-child(2){width:40%}th:nth-child(3),th:nth-child(4){width:16%}th:nth-child(5){width:20%}.bottom{display:grid;grid-template-columns:1.15fr 1fr;gap:14px;margin-top:14px}.words,.totals{border:1px solid #e3dbd0;border-radius:10px;padding:10px 12px;line-height:1.9}.words b{color:#7a4423}.totals{padding:0;overflow:hidden}.totals .r{display:flex;justify-content:space-between;padding:7px 12px}.totals .r+.r{border-top:1px solid #e3dbd0}.totals .big{background:#7a4423;color:#fff;font-size:16px;font-weight:800}.totals .due{background:#f5ece3;color:#7a4423;font-weight:800}.sign{display:grid;grid-template-columns:1fr 1fr;gap:40px;margin-top:34px;text-align:center;font-size:12px;color:#6b645b}.sign div>div{margin-top:36px;border-top:1px solid #1f1b16;padding-top:5px}.foot{position:absolute;bottom:0;right:0;left:0;text-align:center;padding:6px;background:#f5ece3;color:#7a4423;font-weight:700;font-size:11.5px;border-top:2px solid #7a4423}
+  </style></head><body><main class="page"><div class="top"></div><header class="head"><div class="brand"><div class="logo">ش</div><div><div class="co-name">شركة الشرق الكبرى</div><div class="co-sub">للطلاء الخارجي والعوازل</div><div class="addr">ليبيا - طرابلس - عين زارة - بجانب شيل فرحات</div></div></div><div class="meta"><div><span>رقم الفاتورة</span><b>${invoiceNumber}</b></div><div><span>تاريخ الإصدار</span><b>${todayISO()}</b></div><div><span>تاريخ المشروع</span><b>${escapeHtml(project.dateCreated || "—")}</b></div></div></header><div class="title"><span>فاتورة القياس النهائي</span></div><section class="info"><div class="cell"><div class="row"><span class="k">الزبون</span><span class="v">${escapeHtml(project.customerName || "غير محدد")}</span></div><div class="row"><span class="k">الهاتف</span><span class="v" dir="ltr">${escapeHtml(project.phone || "غير محدد")}</span></div></div><div class="cell"><div class="row"><span class="k">العنوان</span><span class="v">${escapeHtml(project.location || "غير محدد")}</span></div><div class="row"><span class="k">نوع المنتج</span><span class="v">${escapeHtml(project.productType || "غير محدد")}</span></div></div></section><table><thead><tr><th>#</th><th>البند</th><th>الكمية</th><th>سعر الوحدة</th><th>الإجمالي</th></tr></thead><tbody>${rowsHtml}</tbody></table><section class="bottom"><div class="words"><div><b>الإجمالي كتابةً:</b> ${escapeHtml(numberToArabicWords(Math.max(0, sm.cost - sm.waived)))} دينار ليبي فقط لا غير</div><div><b>الحالة:</b> ${statusText} — ${statusValue}</div>${sm.waived > 0 ? `<div><b>المبلغ المتغاضى عنه:</b> ${fmt(sm.waived)}</div>` : ""}<div><b>ملاحظات:</b> ${escapeHtml(project.notes || "لا توجد ملاحظات")}</div></div><div class="totals"><div class="r big"><span>الإجمالي</span><span>${fmt(Math.max(0, sm.cost - sm.waived))}</span></div><div class="r"><span>الواصل</span><span>${fmt(sm.paid)}</span></div><div class="r due"><span>${statusText}</span><span>${statusValue}</span></div></div></section><div class="sign"><div>إعداد<div>التوقيع</div></div><div>اعتماد<div>التوقيع</div></div></div></main><footer class="foot">شركة الشرق الكبرى — شكرًا لتعاملكم معنا</footer></body></html>`;
+  printWindow.document.open(); printWindow.document.write(printHtml); printWindow.document.close();
   let printed = false;
-  const triggerPrint = () => {
-    if (printed) return;
-    printed = true;
-    try {
-      printWindow.focus();
-      printWindow.print();
-    } catch (error) {
-      console.error("Print failed:", error);
-    }
-  };
+  const triggerPrint = () => { if (printed) return; printed = true; try { printWindow.focus(); printWindow.print(); } catch (error) { console.error("Print failed:", error); } };
   printWindow.onload = triggerPrint;
   window.setTimeout(triggerPrint, 700);
 }
 
+function WaiveInline({ remaining, waived, onApply, onReset }) {
+  const [amount, setAmount] = useState("");
+  const [note, setNote] = useState("");
+  if (remaining <= 0 && waived <= 0) return null;
+  const apply = () => {
+    if (!positiveNumber(amount) || Number(amount) > remaining) { notify("أدخل مبلغًا موجبًا لا يتجاوز الباقي."); return; }
+    onApply(Number(amount), note.trim());
+    setAmount(""); setNote("");
+  };
+  return <div className="rounded-xl border p-3 flex flex-col gap-2" style={{ borderColor: "var(--card-border)" }}><div className="text-sm font-medium" style={{ color: "var(--text-body)" }}>التغاضي عن جزء من المبلغ</div>{remaining > 0 && <><div className="flex gap-2"><TextInput type="number" placeholder={`المبلغ (الباقي ${fmt(remaining)})`} value={amount} onChange={(e) => setAmount(e.target.value)} /><TextInput placeholder="سبب (اختياري)" value={note} onChange={(e) => setNote(e.target.value)} /></div><div className="flex gap-2 flex-wrap"><GhostButton onClick={apply}>تغاضي عن المبلغ</GhostButton><GhostButton onClick={() => setAmount(String(remaining))}>كامل الباقي</GhostButton></div></>}{waived > 0 && <div className="flex items-center justify-between text-xs" style={{ color: "var(--text-muted)" }}><span>إجمالي المتغاضى عنه: {fmt(waived)}</span><button onClick={onReset} style={{ color: "#A34632" }}>إلغاء التغاضي</button></div>}</div>;
+}
 
 function ProjectDetail({ project, onClose, onSave, onDelete, onAddPayment, customers, upsertCustomer, income = [] }) {
   const [sub, setSub] = useState("info");
@@ -1462,16 +1058,18 @@ function ProjectDetail({ project, onClose, onSave, onDelete, onAddPayment, custo
   const [confirmDelete, setConfirmDelete] = useState(false);
   useEffect(() => setLocal(project), [project.id]);
   const update = (patch) => { const next = { ...local, ...patch }; setLocal(next); onSave(next); };
-  const totalMeasured = projectCost(local);
+  const sm = getProjectSummary(local, income);
   const projectPayments = getProjectPayments(local, income);
-  const totalPaid = projectPayments.reduce((s, payment) => s + Number(payment.amount || 0), 0);
-  const remaining = Math.max(0, totalMeasured - totalPaid);
-
   const addPayment = (payment) => {
     const next = { ...local, payments: [payment, ...(local.payments || [])] };
     setLocal(next);
     onAddPayment(next, payment);
   };
+  const waive = (amount, note) => update({ waivedAmount: Math.min(sm.cost, Number(local.waivedAmount || 0) + amount), waiveNote: note || local.waiveNote || "" });
+  const projectStatusLabel = sm.remaining > 0 ? "الباقي" : sm.surplus > 0 ? "رصيد للزبون" : sm.advance > 0 ? "مقدّم زائد" : "الحالة";
+  const projectStatusValue = sm.remaining > 0 ? fmt(sm.remaining) : sm.surplus > 0 ? fmt(sm.surplus) : sm.advance > 0 ? fmt(sm.advance) : sm.settled ? "خالص" : "بانتظار الكيل";
+  const projectStatusColor = sm.remaining > 0 ? "#A34632" : "#4B6350";
+  const projectStatusBg = sm.remaining > 0 ? "var(--warn-bg)" : "var(--good-bg)";
 
   return (
     <Modal title={`مشروع — ${local.customerName}`} onClose={onClose} wide>
@@ -1503,16 +1101,18 @@ function ProjectDetail({ project, onClose, onSave, onDelete, onAddPayment, custo
             <div className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>تتحدّث هذه الحالة تلقائيًا: «قيد التنفيذ» عند أول حركة بضاعة، و«مكتمل» عند أول كيل — ويمكنك تعديلها يدويًا عند الحاجة.</div>
           </div>
           <div><FieldLabel>ملاحظات</FieldLabel><textarea value={local.notes} onChange={(e) => update({ notes: e.target.value })} rows={2} className="w-full rounded-lg border px-3 py-2 text-sm outline-none" style={{ background: "var(--input-bg)", borderColor: "var(--card-border)", color: "var(--text-strong)" }} /></div>
-          <div className="grid grid-cols-3 gap-2 text-sm mt-1">
-            <div className="rounded-xl p-3" style={{ background: "var(--divider)" }}><div className="text-xs" style={{ color: "var(--text-muted)" }}>التكلفة الإجمالية</div><div className="font-bold mt-1" style={{ color: "var(--text-strong)" }}>{fmt(totalMeasured)}</div></div>
-            <div className="rounded-xl p-3" style={{ background: "var(--good-bg)" }}><div className="text-xs" style={{ color: "var(--text-muted)" }}>الواصل</div><div className="font-bold mt-1" style={{ color: "#4B6350" }}>{fmt(totalPaid)}</div></div>
-            <div className="rounded-xl p-3" style={{ background: remaining === 0 ? "var(--good-bg)" : "var(--warn-bg)" }}><div className="text-xs" style={{ color: "var(--text-muted)" }}>{remaining === 0 ? "الحالة" : "الباقي"}</div><div className="font-bold mt-1" style={{ color: remaining === 0 ? "#4B6350" : "#A34632" }}>{remaining === 0 ? "خالص" : fmt(remaining)}</div></div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-sm mt-1">
+            <div className="rounded-xl p-3" style={{ background: "var(--divider)" }}><div className="text-xs" style={{ color: "var(--text-muted)" }}>التكلفة الإجمالية</div><div className="font-bold mt-1" style={{ color: "var(--text-strong)" }}>{fmt(sm.cost)}</div></div>
+            <div className="rounded-xl p-3" style={{ background: "var(--good-bg)" }}><div className="text-xs" style={{ color: "var(--text-muted)" }}>الواصل</div><div className="font-bold mt-1" style={{ color: "#4B6350" }}>{fmt(sm.paid)}</div></div>
+            {sm.waived > 0 && <div className="rounded-xl p-3" style={{ background: "var(--divider)" }}><div className="text-xs" style={{ color: "var(--text-muted)" }}>متغاضى عنه</div><div className="font-bold mt-1" style={{ color: "var(--text-strong)" }}>{fmt(sm.waived)}</div></div>}
+            <div className="rounded-xl p-3" style={{ background: projectStatusBg }}><div className="text-xs" style={{ color: "var(--text-muted)" }}>{projectStatusLabel}</div><div className="font-bold mt-1" style={{ color: projectStatusColor }}>{projectStatusValue}</div></div>
           </div>
           <div className="flex gap-2">
-            <GhostButton onClick={() => printProjectInvoice(local)}><Icon name="download" size={14} /> طباعة فاتورة القياس</GhostButton>
+            <GhostButton onClick={() => printProjectInvoice(local, income)}><Icon name="download" size={14} /> طباعة فاتورة القياس</GhostButton>
           </div>
           {local.status !== "مكتمل" && <PrimaryButton full onClick={() => update({ status: "مكتمل", completedAt: todayISO() })}><Icon name="check" size={16} /> إنهاء المشروع يدويًا</PrimaryButton>}
           <RecordIncomeInline project={local} onAdd={addPayment} />
+          <WaiveInline remaining={sm.remaining} waived={sm.waived} onApply={waive} onReset={() => update({ waivedAmount: 0, waiveNote: "" })} />
           <div className="pt-3 border-t flex justify-end" style={{ borderColor: "var(--card-border)" }}>
             {confirmDelete ? <ConfirmInline label="حذف المشروع نهائيًا؟" onConfirm={onDelete} onCancel={() => setConfirmDelete(false)} /> : <button onClick={() => setConfirmDelete(true)} className="text-xs flex items-center gap-1" style={{ color: "#A34632" }}><Icon name="trash" size={13} /> حذف المشروع</button>}
           </div>
@@ -2046,11 +1646,11 @@ function ContactDetail({ contact, label, icon, invoices = [], onClose, onSave, o
   const supplierStatement = label === "موردون" ? getSupplierStatement(local, invoices) : null;
   const isDuplicateName = hasDuplicateName(existing, local.name);
   const projectTotals = (relatedProjects || []).reduce((summary, project) => {
-    const cost = projectCost(project);
-    const paid = getProjectPayments(project, income).reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
-    return { cost: summary.cost + cost, paid: summary.paid + paid };
-  }, { cost: 0, paid: 0 });
-  const projectRemaining = Math.max(0, projectTotals.cost - projectTotals.paid);
+    const sm = getProjectSummary(project, income);
+    return { cost: summary.cost + sm.cost, paid: summary.paid + sm.paid, remaining: summary.remaining + sm.remaining, surplus: summary.surplus + sm.surplus };
+  }, { cost: 0, paid: 0, remaining: 0, surplus: 0 });
+  const projectRemaining = projectTotals.remaining;
+  const grandTotal = balance + projectRemaining - projectTotals.surplus;
 
   const addTx = () => {
     if (!positiveNumber(txAmount) || Number(txAmount) < 0) { notify("مبلغ الحركة يجب أن يكون موجبًا."); return; }
@@ -2110,9 +1710,9 @@ function ContactDetail({ contact, label, icon, invoices = [], onClose, onSave, o
         {relatedProjects != null && (
           <div className="rounded-xl border p-3 flex flex-col gap-2" style={{ borderColor: "var(--card-border)" }}>
             <FieldLabel>مشاريع هذا العميل ({relatedProjects.length})</FieldLabel>
-            <div className="rounded-lg p-3 flex items-center justify-between" style={{ background: (balance + projectRemaining) > 0 ? "var(--warn-bg)" : "var(--good-bg)" }}>
+            <div className="rounded-lg p-3 flex items-center justify-between" style={{ background: grandTotal > 0 ? "var(--warn-bg)" : "var(--good-bg)" }}>
               <span className="text-sm" style={{ color: "var(--text-body)" }}>الإجمالي الكلي المستحق (الرصيد + باقي المشاريع)</span>
-              <span className="font-bold text-lg" style={{ color: (balance + projectRemaining) > 0 ? "#A34632" : "#4B6350" }}>{(balance + projectRemaining) > 0 ? fmt(balance + projectRemaining) : "لا يوجد"}</span>
+              <span className="font-bold text-lg" style={{ color: grandTotal > 0 ? "#A34632" : "#4B6350" }}>{grandTotal > 0 ? fmt(grandTotal) : grandTotal < 0 ? "رصيد للعميل " + fmt(-grandTotal) : "لا يوجد"}</span>
             </div>
             <div className="text-xs" style={{ color: "var(--text-muted)" }}>الرصيد اليدوي أعلاه لا يشمل دفعات المشاريع، وتُحتسب دفعات المشاريع في الملخص أدناه بشكل منفصل.</div>
             <div className="grid grid-cols-3 gap-2 text-xs">
@@ -2120,20 +1720,20 @@ function ContactDetail({ contact, label, icon, invoices = [], onClose, onSave, o
               <div className="rounded-lg p-2" style={{ background: "var(--good-bg)" }}><div style={{ color: "var(--text-muted)" }}>مجموع الواصل</div><strong style={{ color: "#4B6350" }}>{fmt(projectTotals.paid)}</strong></div>
               <div className="rounded-lg p-2" style={{ background: projectRemaining ? "var(--warn-bg)" : "var(--good-bg)" }}><div style={{ color: "var(--text-muted)" }}>{projectRemaining ? "الباقي العام" : "الحالة"}</div><strong style={{ color: projectRemaining ? "#A34632" : "#4B6350" }}>{projectRemaining ? fmt(projectRemaining) : "خالص"}</strong></div>
             </div>
+            {projectTotals.surplus > 0 && <div className="text-xs" style={{ color: "#4B6350" }}>زيادة مدفوعة في مشاريع مكتملة (رصيد للعميل): {fmt(projectTotals.surplus)}</div>}
             {relatedProjects.length === 0 ? (
               <div className="text-xs" style={{ color: "var(--text-muted)" }}>لا توجد مشاريع مرتبطة بهذا العميل بعد</div>
             ) : (
               <div className="flex flex-col divide-y" style={{ borderColor: "var(--divider)" }}>
                 {relatedProjects.map((p) => {
-                  const total = projectCost(p);
-                  const paid = getProjectPayments(p, income).reduce((s, payment) => s + Number(payment.amount || 0), 0);
-                  const remaining = Math.max(0, total - paid);
+                  const m = getProjectSummary(p, income);
+                  const total = m.cost;
                   return (
                     <button key={p.id} onClick={() => { onOpenProject(p.id); onClose(); }} className="flex items-center justify-between py-2 text-right" style={{ borderColor: "var(--divider)" }}>
                       <div><div className="text-sm" style={{ color: "var(--text-body)" }}>{p.location || "بدون موقع"}</div><div className="text-xs" style={{ color: "var(--text-muted)" }}>{p.dateCreated} · {p.productType}</div></div>
                       <div className="flex items-center gap-2">
                         <Badge bg={STATUS_COLOR[p.status].bg} fg={STATUS_COLOR[p.status].fg}>{p.status}</Badge>
-                        <span className="text-xs" style={{ color: remaining ? "#A34632" : "#4B6350" }}>{remaining ? `باقي ${fmt(remaining)}` : "خالص"}</span>
+                        <span className="text-xs" style={{ color: m.remaining ? "#A34632" : "#4B6350" }}>{m.remaining ? `باقي ${fmt(m.remaining)}` : m.surplus ? `رصيد ${fmt(m.surplus)}` : m.settled ? "خالص" : "بانتظار الكيل"}</span>
                         <span className="text-sm font-medium" style={{ color: "var(--text-strong)" }}>{fmt(total)}</span>
                       </div>
                     </button>
@@ -2273,7 +1873,7 @@ function ReportsTab({ month, setMonth, projects, invoices, expenses, income, att
   })).filter((s) => s.present + s.half + s.absent > 0);
 
   const customerDebts = customers
-    .map((c) => { const o = getCustomerOutstanding(c, projects, income); return { name: c.name, phone: c.phone, ledger: o.ledger, projectsRemaining: o.projectsRemaining, total: o.total }; })
+    .map((c) => { const o = getCustomerOutstanding(c, projects, income); return { name: c.name, phone: c.phone, ledger: o.ledger, projectsRemaining: o.projectsRemaining, projectsSurplus: o.projectsSurplus, total: o.total }; })
     .filter((c) => c.total > 0)
     .sort((a, b) => b.total - a.total);
   const supplierDebts = suppliers
@@ -2294,7 +1894,7 @@ function ReportsTab({ month, setMonth, projects, invoices, expenses, income, att
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(completedProjects.map((p) => ({ الزبون: p.customerName, الموقع: p.location, الحالة: p.status, "تاريخ المشروع": p.dateCreated, "تاريخ الإكمال": p.completedAt, الإجمالي: projectCost(p) }))), "مشاريع مكتملة");
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(Array.from(new Map(projects.flatMap((project) => getProjectPayments(project, income).filter((payment) => monthKey(payment.date) === month).map((payment) => [payment.paymentId || payment.id, { الزبون: project.customerName, "معرف المشروع": project.id, "تاريخ الدفعة": payment.date, المبلغ: payment.amount, "وصف الدفعة": payment.description || "" }]))).values())), "دفعات المشاريع");
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(workers.map((w) => { const records = monthAttendance.filter((a) => a.workerId === w.id); return { العامل: w.name, حاضر: records.filter((a) => a.status === "حاضر").length, "نصف يوم": records.filter((a) => a.status === "نصف يوم").length, غائب: records.filter((a) => a.status === "غائب").length }; })), "حضور العمال");
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(customerDebts.length ? customerDebts.map((c) => ({ العميل: c.name, الهاتف: c.phone || "", "رصيد يدوي": c.ledger, "باقي مشاريع": c.projectsRemaining, "الإجمالي المستحق": c.total })) : [{ "لا توجد مستحقات": "" }]), "مستحقات العملاء");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(customerDebts.length ? customerDebts.map((c) => ({ العميل: c.name, الهاتف: c.phone || "", "رصيد يدوي": c.ledger, "باقي مشاريع": c.projectsRemaining, "رصيد فائض المشاريع": c.projectsSurplus || 0, "الإجمالي المستحق": c.total })) : [{ "لا توجد مستحقات": "" }]), "مستحقات العملاء");
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(supplierDebts.length ? supplierDebts.map((s) => ({ المورد: s.name, الهاتف: s.phone || "", "المبلغ المستحق": s.total })) : [{ "لا توجد مستحقات": "" }]), "مستحقات للموردين");
     const buf = XLSX.write(wb, { type: "array", bookType: "xlsx" });
     const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
