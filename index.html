@@ -685,7 +685,7 @@ function FactoryApp({ organizationId, organizationCode, email, onSignOut }) {
     <div dir="rtl" className="w-full min-h-screen flex" style={{ background: "var(--bg)", fontFamily: "'Cairo', sans-serif" }}>
       <aside className="w-[220px] shrink-0 hidden sm:flex sticky top-0 h-screen overflow-y-auto flex-col py-5 px-3 gap-1" style={{ background: "#2B2A27" }}>
         <div className="px-2 pb-5 flex items-center gap-2">
-          <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: "var(--accent)" }}><Icon name="factory" size={18} color="white" /></div>
+          <img src="Earthlog.jpeg" alt="شعار الشركة" className="w-9 h-9 rounded-xl object-cover shrink-0" />
           <div>
             <div className="text-white font-bold text-sm" style={{ fontFamily: "'El Messiri', sans-serif" }}>مصنع التكس والسيليكات</div>
             <div className="text-[11px] text-stone-400">إدارة المحاسبة</div>
@@ -734,7 +734,7 @@ function FactoryApp({ organizationId, organizationCode, email, onSignOut }) {
 
       <main className="flex-1 min-w-0 p-4 sm:p-6 pb-24 sm:pb-6">
         <div className="sm:hidden mb-4 rounded-xl border px-3 py-3 flex items-center gap-3" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>
-          <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: "var(--accent)" }}><Icon name="factory" size={18} color="white" /></div>
+          <img src="Earthlog.jpeg" alt="شعار الشركة" className="w-9 h-9 rounded-xl object-cover shrink-0" />
           <div className="min-w-0 flex-1">
             <div className="text-sm font-bold truncate" style={{ fontFamily: "'El Messiri', sans-serif", color: "var(--text-strong)" }}>مصنع التكس والسيليكات</div>
             <div className="text-[10px] truncate" style={{ color: "var(--text-muted)" }}>{email || "حساب الشركة"}{organizationCode ? " · رمز الشركة: " + organizationCode : ""}</div>
@@ -1023,23 +1023,93 @@ function NewProjectModal({ onClose, onCreate, customers, upsert }) {
 // ---------- Project detail ----------
 function printProjectInvoice(project, income = []) {
   const sm = getProjectSummary(project, income);
-  const rows = (project.measurements || []).flatMap((measurement) => (measurement.entries || []).map((entry) => ({ label: entry.label || "", quantity: Number(entry.quantity || 0), unitPrice: Number(entry.unitPrice || 0), total: Number(entry.total || 0) })));
+  const invoiceTotal = Math.max(0, sm.cost - sm.waived);
+  const remaining = Math.max(0, sm.remaining);
+  const isSettled = sm.settled || (invoiceTotal > 0 && remaining === 0 && sm.surplus === 0);
+  const statusText = isSettled ? "خالص" : sm.surplus > 0 ? "خالص — رصيد للزبون" : "غير خالص";
   const invoiceNumber = String(project.id || "").replace(/[^0-9]/g, "").slice(-6) || "000001";
-  const rowsHtml = rows.length ? rows.map((row, index) => `<tr><td>${index + 1}</td><td class="item-name">${escapeHtml(row.label)}</td><td>${fmt(row.quantity)}</td><td>${fmt(row.unitPrice)}</td><td class="num">${fmt(row.total)}</td></tr>`).join("") : `<tr><td colspan="5" class="empty-row">لا توجد قياسات نهائية مسجلة</td></tr>`;
-  const statusText = sm.remaining > 0 ? "المتبقي على الزبون" : sm.surplus > 0 ? "رصيد للزبون" : "الحالة";
-  const statusValue = sm.remaining > 0 ? fmt(sm.remaining) : sm.surplus > 0 ? fmt(sm.surplus) : sm.settled ? "خالص" : "بانتظار الكيل";
-  const printWindow = window.open("", "_blank", "width=900,height=1100");
+  const rows = (project.measurements || []).flatMap((measurement) => (measurement.entries || []).map((entry) => ({
+    label: entry.label || entry.name || "بند قياس نهائي",
+    quantity: Number(entry.quantity || 0),
+    unitPrice: Number(entry.unitPrice || 0),
+    total: Number(entry.total || entry.totalAmount || 0),
+  })));
+  const rowsHtml = rows.length ? rows.map((row, index) => `<tr><td class="index">${index + 1}</td><td class="item-name">${escapeHtml(row.label)}</td><td>${fmt(row.quantity)}</td><td>${fmt(row.unitPrice)}</td><td class="num">${fmt(row.total)}</td></tr>`).join("") : `<tr><td colspan="5" class="empty-row">لا توجد قياسات نهائية مسجلة</td></tr>`;
+  const companyLogoUrl = new URL("Earthlog.jpeg", window.location.href).href;
+  const printWindow = window.open("", "_blank", "width=900,height=1000");
   if (!printWindow) { notify("يرجى السماح بالنوافذ المنبثقة لطباعة الفاتورة."); return; }
-  const printHtml = `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="UTF-8" /><title>فاتورة - ${escapeHtml(project.customerName)}</title><style>
-    @page{size:A4 portrait;margin:0}*{box-sizing:border-box;-webkit-print-color-adjust:exact;print-color-adjust:exact}body{margin:0;font-family:Arial,Tahoma,sans-serif;color:#1f1b16;font-size:13px;background:#fff}.page{width:210mm;min-height:297mm;padding:0 14mm 18mm;position:relative}.top{height:9mm;background:#7a4423;margin:0 -14mm 8mm}.head{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;border-bottom:2px solid #7a4423;padding-bottom:12px}.brand{display:flex;gap:12px;align-items:center}.logo{width:54px;height:54px;border-radius:14px;background:#7a4423;color:#fff;display:flex;align-items:center;justify-content:center;font-size:26px;font-weight:800}.co-name{font-size:22px;font-weight:800;color:#7a4423}.co-sub{font-size:12px;font-weight:600;color:#6b645b}.addr{font-size:11px;color:#6b645b;margin-top:3px}.meta{border:1px solid #e3dbd0;border-radius:10px;overflow:hidden;min-width:190px}.meta div{display:flex;justify-content:space-between;gap:12px;padding:6px 10px;font-size:12px}.meta div+div{border-top:1px solid #e3dbd0}.meta b{color:#7a4423}.title{text-align:center;margin:14px 0;color:#7a4423;font-size:17px;font-weight:800}.title span{display:inline-block;padding:4px 28px;border:1.5px solid #7a4423;border-radius:30px;background:#f5ece3}.info{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px}.cell{border:1px solid #e3dbd0;border-radius:10px;padding:8px 12px;background:#fcfaf7}.row{display:flex;justify-content:space-between;gap:10px;padding:3px 0}.row+.row{border-top:1px dashed #e3dbd0}.k{color:#6b645b;font-size:11.5px}.v{font-weight:700;text-align:left}table{width:100%;border-collapse:separate;border-spacing:0;border:1px solid #e3dbd0;border-radius:10px;overflow:hidden}th{background:#7a4423;color:#fff;padding:9px 6px;font-size:12px}td{padding:8px 6px;text-align:center;border-top:1px solid #e3dbd0}tbody tr:nth-child(even) td{background:#fbf8f4}.item-name{text-align:right;padding-right:12px;font-weight:600}.num{font-weight:800}.empty-row{color:#6b645b;padding:22px}th:nth-child(1){width:8%}th:nth-child(2){width:40%}th:nth-child(3),th:nth-child(4){width:16%}th:nth-child(5){width:20%}.bottom{display:grid;grid-template-columns:1.15fr 1fr;gap:14px;margin-top:14px}.words,.totals{border:1px solid #e3dbd0;border-radius:10px;padding:10px 12px;line-height:1.9}.words b{color:#7a4423}.totals{padding:0;overflow:hidden}.totals .r{display:flex;justify-content:space-between;padding:7px 12px}.totals .r+.r{border-top:1px solid #e3dbd0}.totals .big{background:#7a4423;color:#fff;font-size:16px;font-weight:800}.totals .due{background:#f5ece3;color:#7a4423;font-weight:800}.sign{display:grid;grid-template-columns:1fr 1fr;gap:40px;margin-top:34px;text-align:center;font-size:12px;color:#6b645b}.sign div>div{margin-top:36px;border-top:1px solid #1f1b16;padding-top:5px}.foot{position:absolute;bottom:0;right:0;left:0;text-align:center;padding:6px;background:#f5ece3;color:#7a4423;font-weight:700;font-size:11.5px;border-top:2px solid #7a4423}
-  </style></head><body><main class="page"><div class="top"></div><header class="head"><div class="brand"><div class="logo">ش</div><div><div class="co-name">شركة الشرق الكبرى</div><div class="co-sub">للطلاء الخارجي والعوازل</div><div class="addr">ليبيا - طرابلس - عين زارة - بجانب شيل فرحات</div></div></div><div class="meta"><div><span>رقم الفاتورة</span><b>${invoiceNumber}</b></div><div><span>تاريخ الإصدار</span><b>${todayISO()}</b></div><div><span>تاريخ المشروع</span><b>${escapeHtml(project.dateCreated || "—")}</b></div></div></header><div class="title"><span>فاتورة القياس النهائي</span></div><section class="info"><div class="cell"><div class="row"><span class="k">الزبون</span><span class="v">${escapeHtml(project.customerName || "غير محدد")}</span></div><div class="row"><span class="k">الهاتف</span><span class="v" dir="ltr">${escapeHtml(project.phone || "غير محدد")}</span></div></div><div class="cell"><div class="row"><span class="k">العنوان</span><span class="v">${escapeHtml(project.location || "غير محدد")}</span></div><div class="row"><span class="k">نوع المنتج</span><span class="v">${escapeHtml(project.productType || "غير محدد")}</span></div></div></section><table><thead><tr><th>#</th><th>البند</th><th>الكمية</th><th>سعر الوحدة</th><th>الإجمالي</th></tr></thead><tbody>${rowsHtml}</tbody></table><section class="bottom"><div class="words"><div><b>الإجمالي كتابةً:</b> ${escapeHtml(numberToArabicWords(Math.max(0, sm.cost - sm.waived)))} دينار ليبي فقط لا غير</div><div><b>الحالة:</b> ${statusText} — ${statusValue}</div>${sm.waived > 0 ? `<div><b>المبلغ المتغاضى عنه:</b> ${fmt(sm.waived)}</div>` : ""}<div><b>ملاحظات:</b> ${escapeHtml(project.notes || "لا توجد ملاحظات")}</div></div><div class="totals"><div class="r big"><span>الإجمالي</span><span>${fmt(Math.max(0, sm.cost - sm.waived))}</span></div><div class="r"><span>الواصل</span><span>${fmt(sm.paid)}</span></div><div class="r due"><span>${statusText}</span><span>${statusValue}</span></div></div></section><div class="sign"><div>إعداد<div>التوقيع</div></div><div>اعتماد<div>التوقيع</div></div></div></main><footer class="foot">شركة الشرق الكبرى — شكرًا لتعاملكم معنا</footer></body></html>`;
+
+  const printHtml = `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" /><title>فاتورة قياس نهائي - ${escapeHtml(project.customerName || "")}</title><style>
+    @page{size:A4 portrait;margin:0}
+    *{box-sizing:border-box;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+    :root{--ink:#17212b;--muted:#64727d;--brand:#125b5f;--brand-dark:#0b3e42;--gold:#d8a84e;--line:#dce6e7;--soft:#f1f7f6;--paper:#fff}
+    body{margin:0;background:#eef2f1;color:var(--ink);font-family:'Cairo',Arial,Tahoma,sans-serif;font-size:12px}
+    .page{position:relative;width:210mm;min-height:297mm;margin:0 auto;background:var(--paper);padding:10mm 14mm 16mm;overflow:hidden}
+    .shape{position:absolute;z-index:0;top:-30mm;left:-35mm;width:92mm;height:92mm;border-radius:50%;background:var(--soft);opacity:.9}
+    .shape2{position:absolute;z-index:0;top:-14mm;right:-30mm;width:72mm;height:72mm;border-radius:50%;border:10mm solid #f7fbfa;opacity:.9}
+    .topline{position:absolute;z-index:1;top:0;right:0;left:0;height:5mm;background:linear-gradient(90deg,var(--brand-dark),var(--brand),var(--gold))}
+    .content{position:relative;z-index:2}
+    .header{display:grid;grid-template-columns:1.25fr .95fr;gap:14px;align-items:start;padding-top:2mm;padding-bottom:8px;border-bottom:1px solid var(--line)}
+    .identity{display:flex;align-items:center;gap:12px}
+    .logo{width:58px;height:58px;flex:0 0 58px;border-radius:14px;object-fit:cover;box-shadow:0 6px 14px rgba(18,91,95,.18)}
+    .company{font-size:21px;line-height:1.35;font-weight:800;color:var(--brand-dark)}
+    .subtitle{font-size:11px;color:var(--muted);margin-top:2px;font-weight:600}
+    .address{font-size:10.5px;color:var(--muted);margin-top:5px}
+    .meta{display:grid;grid-template-columns:1fr 1fr;gap:7px}
+    .meta-card{border:1px solid var(--line);border-radius:11px;padding:7px 9px;background:#fbfdfd}
+    .meta-card.wide{grid-column:1 / -1}
+    .meta-label{display:block;font-size:9.5px;color:var(--muted);margin-bottom:2px}
+    .meta-value{display:block;font-size:11px;font-weight:800;color:var(--brand-dark)}
+    .managers{margin-top:7px;border-radius:12px;background:var(--soft);padding:6px 10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+    .managers-title{font-size:10px;color:var(--brand-dark);font-weight:800;margin-left:3px}
+    .manager{font-size:10px;color:var(--ink);white-space:nowrap;padding-left:9px;border-left:1px solid #c8dada}
+    .manager:last-child{border-left:0}
+    .manager b{color:var(--brand-dark);margin-left:4px}
+    .title-row{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:11px 0 8px}
+    .title{font-size:20px;font-weight:800;color:var(--brand-dark);margin:0}
+    .title-badge{border-radius:999px;background:var(--brand);color:#fff;padding:6px 14px;font-size:10px;font-weight:700}
+    .customer-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:9px}
+    .customer-card{border:1px solid var(--line);border-radius:13px;padding:7px 11px;background:#fff}
+    .customer-card .label{font-size:9.5px;color:var(--muted);margin-bottom:3px}
+    .customer-card .value{font-size:13px;font-weight:800;color:var(--ink);min-height:19px}
+    table{width:100%;border-collapse:separate;border-spacing:0;overflow:hidden;border:1px solid var(--line);border-radius:13px;background:#fff}
+    th{background:var(--brand-dark);color:#fff;padding:7px 6px;font-size:10.5px;font-weight:700;text-align:center}
+    td{padding:6px 6px;border-top:1px solid var(--line);text-align:center;font-size:11px}
+    tbody tr:nth-child(even) td{background:#f8fbfa}
+    .index{color:var(--brand);font-weight:800;width:8%}.item-name{text-align:right;padding-right:12px;font-weight:700;width:42%}.num{font-weight:800;color:var(--brand-dark)}
+    .empty-row{padding:25px;color:var(--muted)}
+    .summary{display:grid;grid-template-columns:1.15fr .85fr;gap:10px;margin-top:9px}
+    .words-card,.total-card{border:1px solid var(--line);border-radius:13px;overflow:hidden}
+    .words-card{padding:9px 12px;background:var(--soft);line-height:1.7}
+    .section-label{font-size:10px;font-weight:800;color:var(--brand-dark);margin-bottom:4px}
+    .words{font-size:12px;font-weight:700;color:var(--ink)}
+    .status{margin-top:7px;display:inline-flex;border-radius:999px;padding:4px 10px;background:${isSettled ? "#e5f3e9" : "#fff1dc"};color:${isSettled ? "#267044" : "#9a5a0b"};font-weight:800;font-size:10px}
+    .note{font-size:10px;color:var(--muted);margin-top:5px}
+    .total-card{background:#fff}
+    .total-row{display:flex;justify-content:space-between;align-items:center;padding:7px 11px;font-size:11px}
+    .total-row + .total-row{border-top:1px solid var(--line)}
+    .total-row strong{font-size:12px;color:var(--brand-dark)}
+    .total-row.main{background:var(--brand-dark);color:#fff;font-size:13px;font-weight:800}
+    .total-row.main strong{color:#fff;font-size:17px}
+    .total-row.discount{color:#9a5a0b;background:#fffaf0}
+    .total-row.balance{color:${remaining > 0 ? "#a04336" : "#267044"};font-weight:800;background:${remaining > 0 ? "#fff5f2" : "#f0faf3"}}
+    .signatures{display:grid;grid-template-columns:1fr 1fr;gap:45px;margin:16px 20px 0;text-align:center;color:var(--muted);font-size:10px}
+    .signature-line{border-top:1px solid #9daeb0;margin-top:18px;padding-top:4px}
+    .footer{position:absolute;bottom:0;right:0;left:0;padding:8px 14mm;background:var(--brand-dark);color:#fff;text-align:center;font-size:11px;font-weight:700;letter-spacing:.1px}
+    @media print{body{background:#fff}.page{margin:0;box-shadow:none}}
+  </style></head><body><main class="page"><div class="topline"></div><div class="shape"></div><div class="shape2"></div><div class="content">
+    <header class="header"><div><div class="identity"><img class="logo" src="${companyLogoUrl}" alt="شعار الشركة" /><div><div class="company">شركة مجموعة الشرق الكبرى</div><div class="subtitle">للطلاء الخارجي</div><div class="address">ليبيا - طرابلس - عين زارة - بجانب شيل البرقان</div></div></div><div class="managers"><span class="manager"><b>عبدو</b>0913551514</span><span class="manager"><b>محمد</b>0925881514</span><span class="manager"><b>محمد</b>0935001514</span></div></div><div class="meta"><div class="meta-card"><span class="meta-label">التاريخ</span><span class="meta-value">${todayISO()}</span></div><div class="meta-card"><span class="meta-label">رقم الفاتورة</span><span class="meta-value">${invoiceNumber}</span></div><div class="meta-card wide"><span class="meta-label">تاريخ إنشاء المشروع</span><span class="meta-value">${escapeHtml(project.dateCreated || "غير محدد")}</span></div></div></header>
+    <section class="customer-grid"><div class="customer-card"><div class="label">اسم الزبون</div><div class="value">${escapeHtml(project.customerName || "غير محدد")}</div></div><div class="customer-card"><div class="label">موقع المشروع</div><div class="value">${escapeHtml(project.location || "غير محدد")}</div></div></section>
+    <table><thead><tr><th>#</th><th>البند / القياس النهائي</th><th>الكمية</th><th>سعر الوحدة</th><th>الإجمالي</th></tr></thead><tbody>${rowsHtml}</tbody></table>
+    <section class="summary"><div class="words-card"><div class="section-label">الإجمالي بالحروف</div><div class="words">${escapeHtml(numberToArabicWords(remaining))} دينار ليبي فقط لا غير</div><div class="status">الحالة: ${statusText}</div></div><div class="total-card"><div class="total-row main"><span>الإجمالي</span><strong>${fmt(invoiceTotal)}</strong></div>${sm.waived > 0 ? `<div class="total-row discount"><span>الخصم</span><strong>${fmt(sm.waived)}</strong></div>` : ""}<div class="total-row"><span>المدفوع</span><strong>${fmt(sm.paid)}</strong></div><div class="total-row balance"><span>${sm.surplus > 0 ? "رصيد للزبون" : "الباقي"}</span><strong>${sm.surplus > 0 ? fmt(sm.surplus) : fmt(remaining)}</strong></div></div></section>
+    <div class="signatures"><div>إعداد الفاتورة<div class="signature-line">التوقيع</div></div><div>اعتماد الإدارة<div class="signature-line">التوقيع والختم</div></div></div>
+  </div><div class="footer">شركة الشرق الكبرى - شكرا لتعاملكم معنا</div></main></body></html>`;
   printWindow.document.open(); printWindow.document.write(printHtml); printWindow.document.close();
   let printed = false;
   const triggerPrint = () => { if (printed) return; printed = true; try { printWindow.focus(); printWindow.print(); } catch (error) { console.error("Print failed:", error); } };
   printWindow.onload = triggerPrint;
   window.setTimeout(triggerPrint, 700);
 }
-
 function WaiveInline({ remaining, waived, onApply, onReset }) {
   const [amount, setAmount] = useState("");
   const [note, setNote] = useState("");
