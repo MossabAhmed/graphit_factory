@@ -109,12 +109,16 @@ const normalizeName = (value) => String(value || "").trim().replace(/\s+/g, " ")
 const hasDuplicateName = (items, name, currentId = null) => (items || []).some((item) => item.id !== currentId && normalizeName(item.name) === normalizeName(name));
 const contactBalance = (c) => (c.transactions || []).reduce((s, t) => s + (t.type === "debit" ? Number(t.amount) : -Number(t.amount)), 0);
 const getCustomerProjects = (customer, projects) => projects.filter((p) => p.customerId === customer.id || (!p.customerId && p.customerName === customer.name));
+const getCustomerDirectPayments = (customer, income = []) => (income || [])
+  .filter((entry) => !entry.projectId && Number(entry.amount) > 0 && (entry.customerId ? entry.customerId === customer.id : (entry.customerName && normalizeName(entry.customerName) === normalizeName(customer.name))))
+  .sort((a, b) => (a.date || "").localeCompare(b.date || ""));
 const getCustomerOutstanding = (customer, projects, income) => {
   const ledger = contactBalance(customer);
   const sums = getCustomerProjects(customer, projects).map((project) => getProjectSummary(project, income));
   const projectsRemaining = sums.reduce((sum, summary) => sum + summary.remaining, 0);
   const projectsSurplus = sums.reduce((sum, summary) => sum + summary.surplus, 0);
-  return { ledger, projectsRemaining, projectsSurplus, total: ledger + projectsRemaining - projectsSurplus };
+  const directPaid = getCustomerDirectPayments(customer, income).reduce((sum, entry) => sum + Number(entry.amount || 0), 0);
+  return { ledger, projectsRemaining, projectsSurplus, directPaid, total: ledger + projectsRemaining - projectsSurplus - directPaid };
 };
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[ch]));
 function numberToArabicWords(value) {
@@ -210,6 +214,18 @@ const getAllProjectIncome = (projects = [], income = []) => {
     });
   });
   return Array.from(unique.values());
+};
+// الفواتير المدفوعة فعليًا في شهر: فواتير نقدية (غير آجلة) بتاريخ الفاتورة + دفعات سداد الموردين بتاريخ السداد
+const getPaidInvoicesTotal = (invoices = [], suppliers = [], month) => {
+  const supplierIds = new Set((suppliers || []).map((item) => item.id));
+  const cashInvoices = (invoices || [])
+    .filter((inv) => monthKey(inv.date) === month && !(inv.debtTransactionId && supplierIds.has(inv.supplierId)))
+    .reduce((sum, inv) => sum + Number(inv.amount || 0), 0);
+  const supplierPayments = (suppliers || [])
+    .flatMap((item) => item.transactions || [])
+    .filter((t) => t.supplierPayment && monthKey(t.date) === month)
+    .reduce((sum, t) => sum + Math.max(0, Number(t.amount || 0)), 0);
+  return cashInvoices + supplierPayments;
 };
 const upsertSupplierDebt = (supplier, transaction) => {
   const transactions = supplier.transactions || [];
@@ -647,7 +663,7 @@ function FactoryApp({ organizationId, organizationCode, email, onSignOut }) {
   const allIncome = useMemo(() => getAllProjectIncome(projects, income), [projects, income]);
   const monthIncome = useMemo(() => allIncome.filter((x) => monthKey(x.date) === thisMonth).reduce((s, x) => s + Number(x.amount || 0), 0), [allIncome, thisMonth]);
   const monthExpense = useMemo(() => expenses.filter((x) => monthKey(x.date) === thisMonth).reduce((s, x) => s + Number(x.amount || 0), 0), [expenses, thisMonth]);
-  const monthInvoices = useMemo(() => invoices.filter((x) => monthKey(x.date) === thisMonth).reduce((s, x) => s + Number(x.amount || 0), 0), [invoices, thisMonth]);
+  const monthInvoices = useMemo(() => getPaidInvoicesTotal(invoices, suppliers, thisMonth), [invoices, suppliers, thisMonth]);
   const customerDebt = useMemo(() => customers.reduce((s, c) => s + Math.max(0, getCustomerOutstanding(c, projects, income).total), 0), [customers, projects, income]);
 
   const handleImportBackup = async (event) => {
@@ -758,7 +774,7 @@ function FactoryApp({ organizationId, organizationCode, email, onSignOut }) {
         )}
         {tab === "projects" && <Projects projects={projects} onOpen={(id) => setOpenProjectId(id)} onNew={() => setShowNewProject(true)} />}
         {tab === "invoices" && <InvoicesTab invoices={invoices} projects={projects} suppliers={suppliers} upsert={upsert} remove={remove} />}
-        {tab === "finance" && <FinanceTab expenses={expenses} income={income} projects={projects} upsert={upsert} remove={remove} />}
+        {tab === "finance" && <FinanceTab expenses={expenses} income={income} projects={projects} customers={customers} upsert={upsert} remove={remove} />}
         {tab === "accounts" && (
           <AccountsTab sub={accountsSub} setSub={setAccountsSub}
             customers={customers} suppliers={suppliers} workers={workers} invoices={invoices} upsert={upsert} remove={remove}
@@ -808,7 +824,7 @@ function Dashboard({ projects, invoices, lowStock, customerDebt, monthIncome, mo
         <StatCard icon="hammer" label="مشاريع جارية" value={active.length} accent="#6E8F72" />
         <StatCard icon="circleDot" label="مشاريع قادمة" value={leads.length} accent="#C69C4B" />
         <StatCard icon="alert" label="مواد ناقصة بالمخزون" value={lowStock.length} accent="#A34632" />
-        <StatCard icon={net >= 0 ? "trendUp" : "trendDown"} label="صافي الحركة النقدية" value={fmt(net)} sub="واردات − مصاريف − فواتير" accent={net >= 0 ? "#4B6350" : "#A34632"} />
+        <StatCard icon={net >= 0 ? "trendUp" : "trendDown"} label="صافي الحركة النقدية" value={fmt(net)} sub="واردات − مصاريف − فواتير مدفوعة" accent={net >= 0 ? "#4B6350" : "#A34632"} />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
@@ -1105,6 +1121,114 @@ function printProjectInvoice(project, income = []) {
     <div class="signatures"><div>إعداد الفاتورة<div class="signature-line">التوقيع</div></div><div>اعتماد الإدارة<div class="signature-line">التوقيع والختم</div></div></div>
   </div><div class="footer">شركة الشرق الكبرى - شكرا لتعاملكم معنا</div></main></body></html>`;
   printWindow.document.open(); printWindow.document.write(printHtml); printWindow.document.close();
+  let printed = false;
+  const triggerPrint = () => { if (printed) return; printed = true; try { printWindow.focus(); printWindow.print(); } catch (error) { console.error("Print failed:", error); } };
+  printWindow.onload = triggerPrint;
+  window.setTimeout(triggerPrint, 700);
+}
+
+function printAccountStatement(kind, contact, { invoices = [], projects = [], income = [] } = {}) {
+  const isSupplier = kind === "supplier";
+  const byDate = (a, b) => (a.date || "").localeCompare(b.date || "");
+  const td = (value, cls = "") => `<td${cls ? ` class="${cls}"` : ""}>${value}</td>`;
+  const table = (heads, rows, empty) => `<table><thead><tr>${heads.map((h) => `<th>${h}</th>`).join("")}</tr></thead><tbody>${rows.length ? rows.join("") : `<tr><td colspan="${heads.length}" class="empty">${empty}</td></tr>`}</tbody></table>`;
+  const section = (title, inner) => `<h3 class="sec">${title}</h3>${inner}`;
+  const sumRow = (label, value, cls = "") => `<div class="sum-row ${cls}"><span>${label}</span><strong>${value}</strong></div>`;
+  let bodyHtml = "";
+  let totalLabel = "";
+  let totalValue = 0;
+  let totalIsGood = false;
+
+  if (isSupplier) {
+    const st = getSupplierStatement(contact, invoices);
+    const txs = [...(contact.transactions || [])].sort(byDate);
+    const invoiceTxIds = new Set(st.rows.map((r) => r.invoice.debtTransactionId));
+    const payments = txs.filter((t) => t.supplierPayment);
+    const manual = txs.filter((t) => !t.supplierPayment && !invoiceTxIds.has(t.id));
+    bodyHtml += section("الفواتير الآجلة", table(["التاريخ", "رقم الفاتورة", "النوع", "المبلغ", "المسدد", "المتبقي"], st.rows.map((r) => `<tr>${td(escapeHtml(r.invoice.date || ""))}${td(escapeHtml(r.invoice.invoiceNumber || "—"))}${td(escapeHtml(r.invoice.type || ""))}${td(fmt(r.invoice.amount))}${td(fmt(r.paid), "good")}${td(r.remaining ? fmt(r.remaining) : "مسددة", r.remaining ? "bad" : "good")}</tr>`), "لا توجد فواتير آجلة"));
+    bodyHtml += section("دفعات السداد", table(["التاريخ", "البيان", "المبلغ"], payments.map((t) => `<tr>${td(escapeHtml(t.date || ""))}${td(escapeHtml(t.note || "سداد"), "name")}${td(fmt(t.amount), "good")}</tr>`), "لا توجد دفعات سداد"));
+    if (manual.length) bodyHtml += section("حركات يدوية", table(["التاريخ", "البيان", "النوع", "المبلغ"], manual.map((t) => `<tr>${td(escapeHtml(t.date || ""))}${td(escapeHtml(t.note || ""), "name")}${td(t.type === "debit" ? "زيادة علينا" : "رصيد لنا / تسوية")}${td(fmt(t.amount), t.type === "debit" ? "bad" : "good")}</tr>`), ""));
+    const net = st.invoiceDebt + st.manualBalance - st.paymentExcess;
+    totalValue = Math.abs(net); totalIsGood = net <= 0;
+    totalLabel = net > 0 ? "المستحق للمورد (علينا)" : net < 0 ? "رصيد لنا عند المورد" : "الرصيد";
+    bodyHtml += `<div class="summary">${sumRow("إجمالي الفواتير الآجلة", fmt(st.totalInvoices))}${sumRow("المسدد من الفواتير", fmt(st.invoicePaid), "good")}${sumRow("المتبقي من الفواتير", fmt(st.invoiceDebt))}${sumRow("حركات يدوية (علينا)", fmt(st.manualBalance))}${st.paymentExcess > 0 ? sumRow("دفعات زائدة (رصيد لنا)", fmt(st.paymentExcess), "good") : ""}${sumRow(totalLabel, fmt(totalValue), "main")}</div>`;
+  } else {
+    const txs = [...(contact.transactions || [])].sort(byDate);
+    let running = 0;
+    const ledgerRows = txs.map((t) => { running += t.type === "debit" ? Number(t.amount || 0) : -Number(t.amount || 0); return `<tr>${td(escapeHtml(t.date || ""))}${td(escapeHtml(t.note || (t.type === "debit" ? "زيادة دين" : "تسديد")), "name")}${td(t.type === "debit" ? fmt(t.amount) : "", "bad")}${td(t.type === "credit" ? fmt(t.amount) : "", "good")}${td(fmt(running))}</tr>`; });
+    const manualBalance = contactBalance(contact);
+    const sums = projects.map((p) => ({ p, m: getProjectSummary(p, income) }));
+    const projectsRemaining = sums.reduce((sum, x) => sum + x.m.remaining, 0);
+    const projectsSurplus = sums.reduce((sum, x) => sum + x.m.surplus, 0);
+    const projectRows = sums.map(({ p, m }) => `<tr>${td(escapeHtml(p.location || "بدون موقع"), "name")}${td(escapeHtml(p.status || ""))}${td(fmt(m.cost))}${td(m.waived ? fmt(m.waived) : "—")}${td(fmt(m.paid), "good")}${td(m.remaining ? "باقي " + fmt(m.remaining) : m.surplus ? "رصيد له " + fmt(m.surplus) : m.advance ? "دفعة مقدمة " + fmt(m.advance) : m.settled ? "خالص" : "بانتظار الكيل", m.remaining ? "bad" : "good")}</tr>`);
+    const payRows = sums.flatMap(({ p }) => getProjectPayments(p, income).map((pay) => ({ ...pay, project: p }))).sort(byDate).map((pay) => `<tr>${td(escapeHtml(pay.date || ""))}${td(escapeHtml(pay.project.location || pay.project.customerName || ""), "name")}${td(escapeHtml(pay.description || "دفعة"))}${td(fmt(pay.amount), "good")}</tr>`);
+    const direct = getCustomerDirectPayments(contact, income);
+    const directTotal = direct.reduce((sum, e) => sum + Number(e.amount || 0), 0);
+    const directRows = direct.map((e) => `<tr>${td(escapeHtml(e.date || ""))}${td(escapeHtml(e.description || "دفعة"), "name")}${td(fmt(e.amount), "good")}</tr>`);
+    bodyHtml += section("حركات الحساب اليدوية", table(["التاريخ", "البيان", "عليه", "له", "الرصيد"], ledgerRows, "لا توجد حركات يدوية"));
+    bodyHtml += section("المشاريع", table(["الموقع", "الحالة", "التكلفة", "الخصم", "الواصل", "الموقف"], projectRows, "لا توجد مشاريع مرتبطة"));
+    bodyHtml += section("دفعات المشاريع", table(["التاريخ", "المشروع", "البيان", "المبلغ"], payRows, "لا توجد دفعات على المشاريع"));
+    bodyHtml += section("دفعات مباشرة (بدون مشروع)", table(["التاريخ", "البيان", "المبلغ"], directRows, "لا توجد دفعات مباشرة"));
+    const net = manualBalance + projectsRemaining - projectsSurplus - directTotal;
+    totalValue = Math.abs(net); totalIsGood = net <= 0;
+    totalLabel = net > 0 ? "المستحق على الزبون" : net < 0 ? "رصيد للزبون" : "الرصيد";
+    bodyHtml += `<div class="summary">${sumRow("الرصيد اليدوي", fmt(manualBalance))}${sumRow("باقي المشاريع", fmt(projectsRemaining))}${projectsSurplus > 0 ? sumRow("رصيد فائض مشاريع مكتملة (−)", fmt(projectsSurplus), "good") : ""}${directTotal > 0 ? sumRow("دفعات مباشرة (−)", fmt(directTotal), "good") : ""}${sumRow(totalLabel, fmt(totalValue), "main")}</div>`;
+  }
+
+  const title = (isSupplier ? "كشف حساب مورّد" : "كشف حساب زبون") + " - " + (contact.name || "");
+  const logoUrl = new URL("Earthlog.jpeg", window.location.href).href;
+  const printWindow = window.open("", "_blank", "width=900,height=1000");
+  if (!printWindow) { notify("يرجى السماح بالنوافذ المنبثقة لطباعة الكشف."); return; }
+  const html = `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" /><title>${escapeHtml(title)}</title><style>
+    @page{size:A4 portrait;margin:10mm}
+    *{box-sizing:border-box;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+    :root{--ink:#17212b;--muted:#64727d;--brand:#125b5f;--brand-dark:#0b3e42;--gold:#d8a84e;--line:#dce6e7;--soft:#f1f7f6}
+    body{margin:0;background:#eef2f1;color:var(--ink);font-family:'Cairo',Arial,Tahoma,sans-serif;font-size:12px}
+    .page{width:210mm;margin:0 auto;background:#fff;padding:8mm 12mm 10mm}
+    .topline{height:5mm;margin:-8mm -12mm 6mm;background:linear-gradient(90deg,var(--brand-dark),var(--brand),var(--gold))}
+    .header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+    .identity{display:flex;align-items:center;gap:12px}
+    .logo{width:54px;height:54px;border-radius:12px;object-fit:cover}
+    .company{font-size:19px;font-weight:800;color:var(--brand-dark)}
+    .subtitle{font-size:11px;color:var(--muted);font-weight:600}
+    .address{font-size:10px;color:var(--muted);margin-top:3px}
+    .meta{font-size:11px;color:var(--muted);text-align:left}
+    .meta b{color:var(--brand-dark)}
+    .title-row{display:flex;align-items:center;justify-content:space-between;margin:10px 0 6px}
+    .title{font-size:19px;font-weight:800;color:var(--brand-dark);margin:0}
+    .badge{border-radius:999px;background:var(--brand);color:#fff;padding:5px 14px;font-size:10px;font-weight:700}
+    .party{border:1px solid var(--line);border-radius:12px;padding:7px 12px;background:var(--soft);display:flex;gap:24px;flex-wrap:wrap}
+    .party span{color:var(--muted);font-size:10px;display:block}
+    .party strong{font-size:13px}
+    .sec{font-size:13px;color:var(--brand-dark);margin:12px 0 5px}
+    table{width:100%;border-collapse:separate;border-spacing:0;border:1px solid var(--line);border-radius:10px;overflow:hidden}
+    th{background:var(--brand-dark);color:#fff;padding:6px 5px;font-size:10.5px}
+    td{padding:5px;border-top:1px solid var(--line);text-align:center;font-size:11px}
+    td.name{text-align:right}
+    td.empty{color:var(--muted);padding:12px}
+    td.good{color:#267044;font-weight:700}td.bad{color:#a04336;font-weight:700}
+    tbody tr:nth-child(even) td{background:#f8fbfa}
+    tr{page-break-inside:avoid}
+    .summary{margin:14px 0 0 auto;width:62%;border:1px solid var(--line);border-radius:12px;overflow:hidden;page-break-inside:avoid}
+    .sum-row{display:flex;justify-content:space-between;padding:6px 11px;font-size:11px}
+    .sum-row+.sum-row{border-top:1px solid var(--line)}
+    .sum-row.good{color:#267044}
+    .sum-row.main{background:${totalIsGood ? "#267044" : "#a04336"};color:#fff;font-size:13px;font-weight:800}
+    .words{margin-top:8px;font-size:11px;font-weight:700;color:var(--ink)}
+    .signatures{display:grid;grid-template-columns:1fr 1fr;gap:45px;margin:22px 20px 0;text-align:center;color:var(--muted);font-size:10px;page-break-inside:avoid}
+    .signature-line{border-top:1px solid #9daeb0;margin-top:20px;padding-top:4px}
+    .footer{margin-top:14px;padding:7px;background:var(--brand-dark);color:#fff;text-align:center;font-size:10.5px;font-weight:700;border-radius:8px}
+    @media print{body{background:#fff}.page{margin:0;width:auto;padding:0}.topline{margin:0 0 6mm}}
+  </style></head><body><main class="page"><div class="topline"></div>
+    <header class="header"><div class="identity"><img class="logo" src="${logoUrl}" alt="" /><div><div class="company">شركة مجموعة الشرق الكبرى</div><div class="subtitle">للطلاء الخارجي</div><div class="address">ليبيا - طرابلس - عين زارة - بجانب شيل البرقان</div></div></div><div class="meta">تاريخ الكشف<br><b>${todayISO()}</b></div></header>
+    <div class="title-row"><h1 class="title">${isSupplier ? "كشف حساب مورّد" : "كشف حساب زبون"}</h1><span class="badge">${totalLabel}: ${fmt(totalValue)} دينار</span></div>
+    <div class="party"><div><span>${isSupplier ? "اسم المورّد" : "اسم الزبون"}</span><strong>${escapeHtml(contact.name || "")}</strong></div>${contact.phone ? `<div><span>الهاتف</span><strong>${escapeHtml(contact.phone)}</strong></div>` : ""}</div>
+    ${bodyHtml}
+    <div class="words">${totalLabel}: ${escapeHtml(numberToArabicWords(totalValue))} دينار ليبي فقط لا غير</div>
+    <div class="signatures"><div><div class="signature-line">توقيع المحاسب</div></div><div><div class="signature-line">توقيع ${isSupplier ? "المورّد" : "الزبون"}</div></div></div>
+    <div class="footer">شركة مجموعة الشرق الكبرى للطلاء الخارجي</div>
+  </main></body></html>`;
+  printWindow.document.open(); printWindow.document.write(html); printWindow.document.close();
   let printed = false;
   const triggerPrint = () => { if (printed) return; printed = true; try { printWindow.focus(); printWindow.print(); } catch (error) { console.error("Print failed:", error); } };
   printWindow.onload = triggerPrint;
@@ -1500,7 +1624,7 @@ function AddInvoiceForm({ onAdd, projects, suppliers, upsert, initialInvoice = n
 }
 
 // ---------- Finance ----------
-function FinanceTab({ expenses, income, projects, upsert, remove }) {
+function FinanceTab({ expenses, income, projects, customers = [], upsert, remove }) {
   const [sub, setSub] = useState("expenses");
   const [showAdd, setShowAdd] = useState(false);
   const [editingExpense, setEditingExpense] = useState(null);
@@ -1569,9 +1693,9 @@ function FinanceTab({ expenses, income, projects, upsert, remove }) {
         </div>
       )}
       {showAdd && sub === "expenses" && <Modal title="مصروف جديد" onClose={() => setShowAdd(false)}><AddExpenseForm onAdd={(e) => { upsert("expenses", e); setShowAdd(false); }} /></Modal>}
-      {showAdd && sub === "income" && <Modal title="وارد جديد" onClose={() => setShowAdd(false)}><AddIncomeForm projects={projects} onAdd={(e) => { upsert("income", e); setShowAdd(false); }} /></Modal>}
+      {showAdd && sub === "income" && <Modal title="وارد جديد" onClose={() => setShowAdd(false)}><AddIncomeForm projects={projects} customers={customers} onAdd={(e) => { upsert("income", e); setShowAdd(false); }} /></Modal>}
       {editingExpense && <Modal title="تعديل المصروف" onClose={() => setEditingExpense(null)}><AddExpenseForm initialExpense={editingExpense} onAdd={(e) => { upsert("expenses", e); setEditingExpense(null); }} /></Modal>}
-      {editingIncome && <Modal title="تعديل الوارد" onClose={() => setEditingIncome(null)}><AddIncomeForm initialIncome={editingIncome} projects={projects} onAdd={saveIncome} /></Modal>}
+      {editingIncome && <Modal title="تعديل الوارد" onClose={() => setEditingIncome(null)}><AddIncomeForm initialIncome={editingIncome} projects={projects} customers={customers} onAdd={saveIncome} /></Modal>}
     </div>
   );
 }
@@ -1590,13 +1714,20 @@ function AddExpenseForm({ onAdd, initialExpense = null }) {
     </div>
   );
 }
-function AddIncomeForm({ onAdd, projects, initialIncome = null }) {
+function AddIncomeForm({ onAdd, projects, customers = [], initialIncome = null }) {
+  const initialCustomerId = initialIncome?.customerId || (!initialIncome?.projectId && initialIncome?.customerName ? (customers.find((c) => normalizeName(c.name) === normalizeName(initialIncome.customerName))?.id || "") : "");
   const [projectId, setProjectId] = useState(initialIncome?.projectId || "");
+  const [customerId, setCustomerId] = useState(initialCustomerId);
   const [customerName, setCustomerName] = useState(initialIncome?.customerName || "");
   const [amount, setAmount] = useState(initialIncome?.amount ? String(initialIncome.amount) : "");
   const [date, setDate] = useState(initialIncome?.date || todayISO());
   const [description, setDescription] = useState(initialIncome?.description || "");
-  const submit = () => { if (!positiveNumber(amount)) { notify("المبلغ يجب أن يكون موجبًا."); return; } const proj = projects.find((p) => p.id === projectId); onAdd({ ...initialIncome, id: initialIncome?.id || uid(), paymentId: initialIncome?.paymentId, projectId: projectId || null, customerName: proj ? proj.customerName : customerName.trim(), amount: Number(amount), date, description: description.trim() }); };
+  const submit = () => {
+    if (!positiveNumber(amount)) { notify("المبلغ يجب أن يكون موجبًا."); return; }
+    const proj = projects.find((p) => p.id === projectId);
+    const cust = !proj ? customers.find((c) => c.id === customerId) : null;
+    onAdd({ ...initialIncome, id: initialIncome?.id || uid(), paymentId: initialIncome?.paymentId, projectId: projectId || null, customerId: cust ? cust.id : null, customerName: proj ? proj.customerName : (cust ? cust.name : customerName.trim()), amount: Number(amount), date, description: description.trim() });
+  };
   return (
     <div className="flex flex-col gap-3">
       <div>
@@ -1610,7 +1741,28 @@ function AddIncomeForm({ onAdd, projects, initialIncome = null }) {
           getSearchText={(project) => [project.customerName, project.location, project.phone, project.dateCreated].filter(Boolean).join(" ")}
         />
       </div>
-      {!projectId && <div><FieldLabel>اسم الزبون</FieldLabel><TextInput value={customerName} onChange={(e) => setCustomerName(e.target.value)} /></div>}
+      {!projectId && (
+        <div>
+          <FieldLabel>الزبون (بدون مشروع)</FieldLabel>
+          <SearchablePicker
+            items={customers}
+            value={customerId}
+            onSelect={setCustomerId}
+            placeholder="ابحث باسم الزبون أو رقم هاتفه..."
+            getLabel={(customer) => customer.name + (customer.phone ? " — " + customer.phone : "")}
+            getSearchText={(customer) => [customer.name, customer.phone].filter(Boolean).join(" ")}
+            emptyText="لا يوجد زبون بهذا الاسم — أضفه من الحسابات أو اكتب الاسم أدناه"
+          />
+          {customerId ? (
+            <div className="text-xs mt-1" style={{ color: "#4B6350" }}>سيُسجَّل هذا الوارد في حساب الزبون ويُخصم من المستحق عليه.</div>
+          ) : (
+            <div className="mt-2">
+              <FieldLabel>أو اسم زبون غير مسجّل (لن يرتبط بحساب)</FieldLabel>
+              <TextInput value={customerName} onChange={(e) => setCustomerName(e.target.value)} />
+            </div>
+          )}
+        </div>
+      )}
       <div className="grid grid-cols-2 gap-3"><div><FieldLabel>المبلغ</FieldLabel><TextInput type="number" value={amount} onChange={(e) => setAmount(e.target.value)} /></div><div><FieldLabel>التاريخ</FieldLabel><TextInput type="date" value={date} onChange={(e) => setDate(e.target.value)} /></div></div>
       <div><FieldLabel>وصف (اختياري)</FieldLabel><TextInput value={description} onChange={(e) => setDescription(e.target.value)} /></div>
       <PrimaryButton onClick={submit} full disabled={!amount}><Icon name="plus" size={16} /> {initialIncome ? "حفظ تعديل الوارد" : "حفظ الوارد"}</PrimaryButton>
@@ -1720,7 +1872,9 @@ function ContactDetail({ contact, label, icon, invoices = [], onClose, onSave, o
     return { cost: summary.cost + sm.cost, paid: summary.paid + sm.paid, remaining: summary.remaining + sm.remaining, surplus: summary.surplus + sm.surplus };
   }, { cost: 0, paid: 0, remaining: 0, surplus: 0 });
   const projectRemaining = projectTotals.remaining;
-  const grandTotal = balance + projectRemaining - projectTotals.surplus;
+  const directPayments = relatedProjects != null ? getCustomerDirectPayments(local, income) : [];
+  const directTotal = directPayments.reduce((sum, entry) => sum + Number(entry.amount || 0), 0);
+  const grandTotal = balance + projectRemaining - projectTotals.surplus - directTotal;
 
   const addTx = () => {
     if (!positiveNumber(txAmount) || Number(txAmount) < 0) { notify("مبلغ الحركة يجب أن يكون موجبًا."); return; }
@@ -1746,6 +1900,12 @@ function ContactDetail({ contact, label, icon, invoices = [], onClose, onSave, o
           <div><FieldLabel>رقم الهاتف</FieldLabel><TextInput value={local.phone} onChange={(e) => update({ phone: e.target.value })} /></div>
         </div>
         <div><FieldLabel>ملاحظات</FieldLabel><TextInput value={local.notes} onChange={(e) => update({ notes: e.target.value })} /></div>
+
+        {(relatedProjects != null || label === "موردون") && (
+          <button type="button" onClick={() => printAccountStatement(label === "موردون" ? "supplier" : "customer", local, { invoices, projects: relatedProjects || [], income })} className="w-full rounded-lg border px-4 py-2.5 text-sm font-medium flex items-center justify-center gap-2" style={{ borderColor: "var(--accent)", color: "var(--accent)", background: "var(--card-bg)" }}>
+            <Icon name="receipt" size={16} /> كشف حساب
+          </button>
+        )}
 
         <div className="rounded-xl p-3 flex items-center justify-between" style={{ background: balance > 0 ? "var(--warn-bg)" : balance < 0 ? "var(--good-bg)" : "var(--divider)" }}>
           <span className="text-sm" style={{ color: "var(--text-body)" }}>{label === "موردون" ? "الرصيد اليدوي للمورد" : "الرصيد اليدوي للعميل"}</span>
@@ -1781,7 +1941,7 @@ function ContactDetail({ contact, label, icon, invoices = [], onClose, onSave, o
           <div className="rounded-xl border p-3 flex flex-col gap-2" style={{ borderColor: "var(--card-border)" }}>
             <FieldLabel>مشاريع هذا العميل ({relatedProjects.length})</FieldLabel>
             <div className="rounded-lg p-3 flex items-center justify-between" style={{ background: grandTotal > 0 ? "var(--warn-bg)" : "var(--good-bg)" }}>
-              <span className="text-sm" style={{ color: "var(--text-body)" }}>الإجمالي الكلي المستحق (الرصيد + باقي المشاريع)</span>
+              <span className="text-sm" style={{ color: "var(--text-body)" }}>الإجمالي الكلي المستحق (الرصيد + باقي المشاريع − الدفعات المباشرة)</span>
               <span className="font-bold text-lg" style={{ color: grandTotal > 0 ? "#A34632" : "#4B6350" }}>{grandTotal > 0 ? fmt(grandTotal) : grandTotal < 0 ? "رصيد للعميل " + fmt(-grandTotal) : "لا يوجد"}</span>
             </div>
             <div className="text-xs" style={{ color: "var(--text-muted)" }}>الرصيد اليدوي أعلاه لا يشمل دفعات المشاريع، وتُحتسب دفعات المشاريع في الملخص أدناه بشكل منفصل.</div>
@@ -1791,6 +1951,12 @@ function ContactDetail({ contact, label, icon, invoices = [], onClose, onSave, o
               <div className="rounded-lg p-2" style={{ background: projectRemaining ? "var(--warn-bg)" : "var(--good-bg)" }}><div style={{ color: "var(--text-muted)" }}>{projectRemaining ? "الباقي العام" : "الحالة"}</div><strong style={{ color: projectRemaining ? "#A34632" : "#4B6350" }}>{projectRemaining ? fmt(projectRemaining) : "خالص"}</strong></div>
             </div>
             {projectTotals.surplus > 0 && <div className="text-xs" style={{ color: "#4B6350" }}>زيادة مدفوعة في مشاريع مكتملة (رصيد للعميل): {fmt(projectTotals.surplus)}</div>}
+            {directPayments.length > 0 && (
+              <div className="rounded-lg p-2 text-xs flex flex-col gap-1" style={{ background: "var(--good-bg)" }}>
+                <div className="font-medium" style={{ color: "#4B6350" }}>دفعات مباشرة بدون مشروع: {fmt(directTotal)}</div>
+                {directPayments.map((entry) => <div key={entry.id} className="flex items-center justify-between" style={{ color: "var(--text-body)" }}><span>{entry.date}{entry.description ? " · " + entry.description : ""}</span><span>{fmt(entry.amount)}</span></div>)}
+              </div>
+            )}
             {relatedProjects.length === 0 ? (
               <div className="text-xs" style={{ color: "var(--text-muted)" }}>لا توجد مشاريع مرتبطة بهذا العميل بعد</div>
             ) : (
@@ -1926,7 +2092,8 @@ function ReportsTab({ month, setMonth, projects, invoices, expenses, income, att
   const totalIncome = mIncome.reduce((s, x) => s + Number(x.amount || 0), 0);
   const totalExpenses = mExpenses.reduce((s, x) => s + Number(x.amount || 0), 0);
   const totalInvoices = mInvoices.reduce((s, x) => s + Number(x.amount || 0), 0);
-  const net = totalIncome - totalExpenses - totalInvoices;
+  const paidInvoices = getPaidInvoicesTotal(invoices, suppliers, month);
+  const net = totalIncome - totalExpenses - paidInvoices;
 
   const completedProjects = projects.filter((p) => p.completedAt && monthKey(p.completedAt) === month);
   const newProjects = projects.filter((p) => monthKey(p.dateCreated) === month);
@@ -1943,7 +2110,7 @@ function ReportsTab({ month, setMonth, projects, invoices, expenses, income, att
   })).filter((s) => s.present + s.half + s.absent > 0);
 
   const customerDebts = customers
-    .map((c) => { const o = getCustomerOutstanding(c, projects, income); return { name: c.name, phone: c.phone, ledger: o.ledger, projectsRemaining: o.projectsRemaining, projectsSurplus: o.projectsSurplus, total: o.total }; })
+    .map((c) => { const o = getCustomerOutstanding(c, projects, income); return { name: c.name, phone: c.phone, ledger: o.ledger, projectsRemaining: o.projectsRemaining, projectsSurplus: o.projectsSurplus, directPaid: o.directPaid, total: o.total }; })
     .filter((c) => c.total > 0)
     .sort((a, b) => b.total - a.total);
   const supplierDebts = suppliers
@@ -1957,14 +2124,14 @@ function ReportsTab({ month, setMonth, projects, invoices, expenses, income, att
   const exportMonth = async () => {
     if (!window.XLSX) { notify("ميزة التصدير غير متاحة هنا حاليًا."); return; }
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([{ الشهر: month, الواردات: totalIncome, المصاريف: totalExpenses, الفواتير: totalInvoices, الصافي: net }]), "ملخص");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([{ الشهر: month, الواردات: totalIncome, المصاريف: totalExpenses, الفواتير: totalInvoices, "الفواتير المدفوعة": paidInvoices, الصافي: net }]), "ملخص");
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(mIncome.map((x) => ({ الزبون: x.customerName, المشروع: projects.find((p) => p.id === x.projectId)?.customerName || "", "معرف المشروع": x.projectId || "", المبلغ: x.amount, التاريخ: x.date, الوصف: x.description }))), "الواردات");
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(mExpenses.map((x) => ({ النوع: x.type, المبلغ: x.amount, التاريخ: x.date }))), "المصاريف");
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(mInvoices.map((x) => ({ النوع: x.type, المورد: x.supplierName, المبلغ: x.amount, التاريخ: x.date }))), "الفواتير");
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(completedProjects.map((p) => ({ الزبون: p.customerName, الموقع: p.location, الحالة: p.status, "تاريخ المشروع": p.dateCreated, "تاريخ الإكمال": p.completedAt, الإجمالي: projectCost(p) }))), "مشاريع مكتملة");
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(Array.from(new Map(projects.flatMap((project) => getProjectPayments(project, income).filter((payment) => monthKey(payment.date) === month).map((payment) => [payment.paymentId || payment.id, { الزبون: project.customerName, "معرف المشروع": project.id, "تاريخ الدفعة": payment.date, المبلغ: payment.amount, "وصف الدفعة": payment.description || "" }]))).values())), "دفعات المشاريع");
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(workers.map((w) => { const records = monthAttendance.filter((a) => a.workerId === w.id); return { العامل: w.name, حاضر: records.filter((a) => a.status === "حاضر").length, "نصف يوم": records.filter((a) => a.status === "نصف يوم").length, غائب: records.filter((a) => a.status === "غائب").length }; })), "حضور العمال");
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(customerDebts.length ? customerDebts.map((c) => ({ العميل: c.name, الهاتف: c.phone || "", "رصيد يدوي": c.ledger, "باقي مشاريع": c.projectsRemaining, "رصيد فائض المشاريع": c.projectsSurplus || 0, "الإجمالي المستحق": c.total })) : [{ "لا توجد مستحقات": "" }]), "مستحقات العملاء");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(customerDebts.length ? customerDebts.map((c) => ({ العميل: c.name, الهاتف: c.phone || "", "رصيد يدوي": c.ledger, "باقي مشاريع": c.projectsRemaining, "رصيد فائض المشاريع": c.projectsSurplus || 0, "دفعات مباشرة": c.directPaid || 0, "الإجمالي المستحق": c.total })) : [{ "لا توجد مستحقات": "" }]), "مستحقات العملاء");
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(supplierDebts.length ? supplierDebts.map((s) => ({ المورد: s.name, الهاتف: s.phone || "", "المبلغ المستحق": s.total })) : [{ "لا توجد مستحقات": "" }]), "مستحقات للموردين");
     const buf = XLSX.write(wb, { type: "array", bookType: "xlsx" });
     const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
@@ -1976,7 +2143,7 @@ function ReportsTab({ month, setMonth, projects, invoices, expenses, income, att
   return (
     <div className="flex flex-col gap-5">
       <div className="flex items-center justify-between flex-wrap gap-3">
-        <div><h1 className="text-xl font-bold" style={{ fontFamily: "'El Messiri', sans-serif", color: "var(--text-strong)" }}>التقارير الشهرية</h1><p className="text-sm mt-0.5" style={{ color: "var(--text-muted)" }}>ملخص شامل لأي شهر تختاره — صافي الحركة النقدية = الواردات − المصاريف − الفواتير</p></div>
+        <div><h1 className="text-xl font-bold" style={{ fontFamily: "'El Messiri', sans-serif", color: "var(--text-strong)" }}>التقارير الشهرية</h1><p className="text-sm mt-0.5" style={{ color: "var(--text-muted)" }}>ملخص شامل لأي شهر تختاره — صافي الحركة النقدية = الواردات − المصاريف − الفواتير المدفوعة (النقدية + سداد الموردين)</p></div>
         <div className="flex items-center gap-2">
           <TextInput type="month" value={month} onChange={(e) => setMonth(e.target.value)} className="max-w-[170px]" />
           <PrimaryButton onClick={exportMonth}><Icon name="download" size={16} /> تصدير التقرير</PrimaryButton>
@@ -1986,7 +2153,7 @@ function ReportsTab({ month, setMonth, projects, invoices, expenses, income, att
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <StatCard icon="trendUp" label="واردات الشهر" value={fmt(totalIncome)} accent="#4B6350" />
         <StatCard icon="trendDown" label="مصاريف الشهر" value={fmt(totalExpenses)} accent="#A34632" />
-        <StatCard icon="receipt" label="فواتير الشهر" value={fmt(totalInvoices)} accent="#8A6A32" />
+        <StatCard icon="receipt" label="فواتير الشهر" value={fmt(totalInvoices)} sub={"المدفوع فعليًا: " + fmt(paidInvoices)} accent="#8A6A32" />
         <StatCard icon={net >= 0 ? "trendUp" : "trendDown"} label="صافي الحركة النقدية" value={fmt(net)} accent={net >= 0 ? "#4B6350" : "#A34632"} />
       </div>
 
