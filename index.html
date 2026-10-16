@@ -415,11 +415,24 @@ function BarBreakdown({ rows }) {
 }
 
 // ---------- persistence layer ----------
+async function fetchAllOrganizationRecords(client, organizationId) {
+  const pageSize = 500;
+  const rows = [];
+  for (let from = 0; ; from += pageSize) {
+    const { data: page, error } = await client.from("app_records").select("collection,id,payload")
+      .eq("organization_id", organizationId).order("collection", { ascending: true }).order("id", { ascending: true }).range(from, from + pageSize - 1);
+    if (error) throw error;
+    rows.push(...(page || []));
+    if (!page || page.length < pageSize) return rows;
+  }
+}
+
 function useFactoryData(organizationId) {
   const [downloadsNs, setDownloadsNs] = useState(null);
   const [reloadToken, setReloadToken] = useState(0);
   const [ready, setReady] = useState(false);
   const [usingLocal, setUsingLocal] = useState(false);
+  const [dataLoaded, setDataLoaded] = useState(false);
   const [error, setError] = useState("");
   const initial = {};
   COLLECTIONS.forEach((c) => (initial[c] = []));
@@ -430,17 +443,31 @@ function useFactoryData(organizationId) {
     const loadLocal = () => {
       setUsingLocal(true);
       const loaded = {};
-      COLLECTIONS.forEach((name) => { try { loaded[name] = JSON.parse(localStorage.getItem(LOCAL_PREFIX + name) || "[]"); } catch (e) { loaded[name] = []; } });
+      const invalidCollections = [];
+      COLLECTIONS.forEach((name) => {
+        try {
+          const parsed = JSON.parse(localStorage.getItem(LOCAL_PREFIX + name) || "[]");
+          if (!Array.isArray(parsed)) throw new Error("Expected a collection array");
+          loaded[name] = parsed;
+        } catch (e) {
+          invalidCollections.push(name);
+          loaded[name] = [];
+        }
+      });
       setData(loaded);
+      setError(invalidCollections.length ? "تعذرت قراءة بعض بيانات التخزين المحلي: " + invalidCollections.join(", ") : "");
+      setDataLoaded(invalidCollections.length === 0);
       setReady(true);
     };
     const loadRemote = async () => {
-      const { data: rows, error: queryError } = await supabaseClient.from("app_records").select("collection,id,payload").eq("organization_id", organizationId);
-      if (queryError) { if (!cancelled) { setError(queryError.message); setReady(true); } return; }
+      setDataLoaded(false);
+      let rows;
+      try { rows = await fetchAllOrganizationRecords(supabaseClient, organizationId); }
+      catch (queryError) { if (!cancelled) { setError(queryError.message || String(queryError)); setReady(true); } return; }
       const loaded = {};
       COLLECTIONS.forEach((name) => (loaded[name] = []));
       (rows || []).forEach((row) => { if (loaded[row.collection]) loaded[row.collection].push({ id: row.id, ...(row.payload || {}) }); });
-      if (!cancelled) { setData(loaded); setReady(true); }
+      if (!cancelled) { setData(loaded); setError(""); setDataLoaded(true); setReady(true); }
     };
     if (!hasSupabaseConfig || !organizationId) { loadLocal(); return () => { cancelled = true; }; }
     loadRemote();
@@ -493,21 +520,12 @@ function useFactoryData(organizationId) {
     const validationError = validateJsonBackup(backup);
     if (validationError) throw new Error(validationError);
     downloadJsonBackup(data, "نسخة-احتياطية-كاملة-المصنع-" + todayISO() + "-قبل-الاستيراد.json");
-    let added = 0;
-    let updated = 0;
-    for (const name of COLLECTIONS) {
-      const currentIds = new Set((data[name] || []).map((record) => record.id));
-      for (const record of backup.collections[name]) {
-        if (currentIds.has(record.id)) updated += 1;
-        else added += 1;
-        await upsert(name, record, { throwOnError: true });
-      }
-    }
+    const result = await importJsonCollections(backup, data, upsert);
     reload();
-    return { added, updated };
+    return result;
   };
 
-  return { ready, usingLocal, data, upsert, remove, downloadsNs, error, reload, importBackup };
+  return { ready, dataLoaded, usingLocal, data, upsert, remove, downloadsNs, error, reload, importBackup };
 }
 
 async function exportBackup(downloadsNs, data) {
@@ -534,7 +552,7 @@ async function exportBackup(downloadsNs, data) {
   });
   const buf = XLSX.write(wb, { type: "array", bookType: "xlsx" });
   const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
-  const filename = "نسخة-احتياطية-المصنع-" + todayISO() + ".xlsx";
+  const filename = "تقرير-المصنع-ملخص-" + todayISO() + ".xlsx";
   if (downloadsNs) { try { await downloadsNs.save({ filename, data: blob }); } catch (e) { console.error("export failed", e); } }
   else downloadBlob(blob, filename);
 }
@@ -549,7 +567,10 @@ function downloadBlob(blob, filename) {
 const buildJsonBackup = (data) => ({
   schemaVersion: 1,
   exportedAt: new Date().toISOString(),
-  collections: Object.fromEntries(COLLECTIONS.map((name) => [name, data[name] || []])),
+  collections: Object.fromEntries(COLLECTIONS.map((name) => {
+    if (!data || !Array.isArray(data[name])) throw new Error(`بيانات مجموعة ${name} غير مكتملة؛ لم يتم إنشاء النسخة.`);
+    return [name, data[name]];
+  })),
 });
 
 function downloadJsonBackup(data, filename = "نسخة-احتياطية-كاملة-المصنع-" + todayISO() + ".json") {
@@ -561,6 +582,8 @@ function validateJsonBackup(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return "ملف النسخة يجب أن يحتوي على كائن JSON.";
   if (value.schemaVersion !== 1) return "إصدار النسخة غير مدعوم.";
   if (!value.collections || typeof value.collections !== "object" || Array.isArray(value.collections)) return "قسم collections غير موجود أو غير صالح.";
+  const unsupportedCollections = Object.keys(value.collections).filter((name) => !COLLECTIONS.includes(name));
+  if (unsupportedCollections.length) return `النسخة تحتوي مجموعات لا يدعمها هذا الإصدار: ${unsupportedCollections.join(", ")}.`;
   for (const name of COLLECTIONS) {
     const records = value.collections[name];
     if (!Array.isArray(records)) return `مجموعة ${name} غير موجودة أو ليست مصفوفة.`;
@@ -578,6 +601,20 @@ function validateJsonBackup(value) {
     }
   }
   return "";
+}
+
+async function importJsonCollections(backup, currentData, upsertRecord) {
+  let added = 0;
+  let updated = 0;
+  for (const name of COLLECTIONS) {
+    const currentIds = new Set((currentData[name] || []).map((record) => record.id));
+    for (const record of backup.collections[name]) {
+      if (currentIds.has(record.id)) updated += 1;
+      else added += 1;
+      await upsertRecord(name, record, { throwOnError: true });
+    }
+  }
+  return { added, updated };
 }
 
 function useAuth() {
@@ -649,7 +686,7 @@ function AuthScreen({ auth }) {
 
 // ---------- App ----------
 function FactoryApp({ organizationId, organizationCode, email, onSignOut }) {
-  const { ready, usingLocal, data, upsert, remove, downloadsNs, error, importBackup } = useFactoryData(organizationId);
+  const { ready, dataLoaded, usingLocal, data, upsert, remove, downloadsNs, error, importBackup } = useFactoryData(organizationId);
   const { projects, invoices, expenses, income, inventory, customers, suppliers, workers, attendance, personalLog } = data;
 
   const [tab, setTab] = useState("dashboard");
@@ -676,7 +713,7 @@ function FactoryApp({ organizationId, organizationCode, email, onSignOut }) {
       const result = await importBackup(backup);
       notify(`تم استيراد النسخة بنجاح: ${result.added} سجل جديد و${result.updated} سجل محدث.`, "success");
     } catch (importError) {
-      notify("توقف الاستيراد عند فشل حفظ أحد السجلات. قد تكون بعض السجلات السابقة قد حُفظت؛ استخدم نسخة ما قبل الاستيراد للاسترجاع." + (importError?.message ? " التفاصيل: " + importError.message : ""));
+      notify("لم يكتمل الاستيراد وقد تكون بعض السجلات حُفظت. أعد استيراد الملف نفسه بعد معالجة السبب؛ الاستيراد يضيف أو يحدّث حسب المعرّف ولا ينشئ نسخًا مكررة." + (importError?.message ? " التفاصيل: " + importError.message : ""));
     }
   };
 
@@ -720,17 +757,18 @@ function FactoryApp({ organizationId, organizationCode, email, onSignOut }) {
           })}
         </div>
         <div className="mt-auto pt-3 flex flex-col gap-2">
-          <button onClick={() => exportBackup(downloadsNs, data)} className="flex items-center gap-2 px-3 py-2.5 rounded-xl text-xs border border-stone-600 text-stone-300 hover:text-white transition">
-            <Icon name="download" size={14} /> نسخة احتياطية (Excel)
+          <button disabled={!dataLoaded} onClick={() => exportBackup(downloadsNs, data)} className="flex items-center gap-2 px-3 py-2.5 rounded-xl text-xs border border-stone-600 text-stone-300 hover:text-white transition disabled:opacity-50 disabled:cursor-not-allowed">
+            <Icon name="download" size={14} /> تقرير Excel (ملخص)
           </button>
-          <button onClick={() => downloadJsonBackup(data)} className="flex items-center gap-2 px-3 py-2.5 rounded-xl text-xs border border-stone-600 text-stone-300 hover:text-white transition">
+          <button disabled={!dataLoaded} onClick={() => downloadJsonBackup(data)} className="flex items-center gap-2 px-3 py-2.5 rounded-xl text-xs border border-stone-600 text-stone-300 hover:text-white transition disabled:opacity-50 disabled:cursor-not-allowed">
             <Icon name="download" size={14} /> نسخة احتياطية كاملة (JSON)
           </button>
-          <button onClick={() => importInputRef.current?.click()} className="flex items-center gap-2 px-3 py-2.5 rounded-xl text-xs border border-stone-600 text-stone-300 hover:text-white transition">
+          <button disabled={!dataLoaded} onClick={() => importInputRef.current?.click()} className="flex items-center gap-2 px-3 py-2.5 rounded-xl text-xs border border-stone-600 text-stone-300 hover:text-white transition disabled:opacity-50 disabled:cursor-not-allowed">
             <Icon name="upload" size={14} /> استيراد نسخة JSON
           </button>
           <input ref={importInputRef} type="file" accept=".json,application/json" onChange={handleImportBackup} className="hidden" />
           <div className="px-2 text-[10px] leading-relaxed text-stone-500">الاستيراد يدمج البيانات ويحدّث السجلات ذات المعرف نفسه.</div>
+          <div className="px-2 text-[10px] leading-relaxed text-stone-500">نسخة JSON تحفظ بيانات التطبيق وحقولها؛ لا تشمل حسابات المستخدمين أو إعدادات Supabase.</div>
           {usingLocal && <div className="px-2 text-[10px] leading-relaxed text-stone-500">يعمل التطبيق حاليًا بتخزين محلي على هذا المتصفح فقط.</div>}
           {organizationCode && <div className="px-2 text-[10px] leading-relaxed text-stone-400">رمز مشاركة الشركة: {organizationCode}</div>}
           {email && <button onClick={onSignOut} className="px-3 py-2 text-xs text-right text-stone-300 hover:text-white">تسجيل الخروج ({email})</button>}
@@ -762,11 +800,11 @@ function FactoryApp({ organizationId, organizationCode, email, onSignOut }) {
         <div className="sm:hidden mb-4 rounded-xl border p-3 flex flex-col gap-2" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>
           <div className="text-xs font-semibold" style={{ color: "var(--text-body)" }}>النسخ الاحتياطي</div>
           <div className="grid grid-cols-1 gap-2">
-            <button onClick={() => exportBackup(downloadsNs, data)} className="flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg text-xs border" style={{ borderColor: "var(--card-border)", color: "var(--text-body)" }}><Icon name="download" size={14} /> نسخة احتياطية (Excel)</button>
-            <button onClick={() => downloadJsonBackup(data)} className="flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg text-xs border" style={{ borderColor: "var(--card-border)", color: "var(--text-body)" }}><Icon name="download" size={14} /> نسخة احتياطية كاملة (JSON)</button>
-            <button onClick={() => importInputRef.current?.click()} className="flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg text-xs border" style={{ borderColor: "var(--card-border)", color: "var(--text-body)" }}><Icon name="upload" size={14} /> استيراد نسخة JSON</button>
+            <button disabled={!dataLoaded} onClick={() => exportBackup(downloadsNs, data)} className="flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg text-xs border disabled:opacity-50 disabled:cursor-not-allowed" style={{ borderColor: "var(--card-border)", color: "var(--text-body)" }}><Icon name="download" size={14} /> تقرير Excel (ملخص)</button>
+            <button disabled={!dataLoaded} onClick={() => downloadJsonBackup(data)} className="flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg text-xs border disabled:opacity-50 disabled:cursor-not-allowed" style={{ borderColor: "var(--card-border)", color: "var(--text-body)" }}><Icon name="download" size={14} /> نسخة احتياطية كاملة (JSON)</button>
+            <button disabled={!dataLoaded} onClick={() => importInputRef.current?.click()} className="flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg text-xs border disabled:opacity-50 disabled:cursor-not-allowed" style={{ borderColor: "var(--card-border)", color: "var(--text-body)" }}><Icon name="upload" size={14} /> استيراد نسخة JSON</button>
           </div>
-          <div className="text-[10px] leading-relaxed" style={{ color: "var(--text-muted)" }}>الاستيراد يدمج البيانات ويحدّث السجلات ذات المعرف نفسه.</div>
+          <div className="text-[10px] leading-relaxed" style={{ color: "var(--text-muted)" }}>الاستيراد يدمج البيانات ويحدّث السجلات ذات المعرف نفسه. JSON يشمل بيانات التطبيق، ولا يشمل حسابات المستخدمين أو إعدادات Supabase.</div>
         </div>
         {tab === "dashboard" && (
           <Dashboard projects={projects} invoices={invoices} lowStock={lowStock} customerDebt={customerDebt}
