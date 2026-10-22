@@ -626,7 +626,7 @@ function useAuth() {
   const loadOrganization = async (currentSession) => {
     if (!currentSession) { setSession(null); setOrganization(null); setLoading(false); return; }
     setSession(currentSession);
-    const organizationName = currentSession.user.user_metadata?.organization_name || "مصنع التكس والسيليكات";
+    const organizationName = currentSession.user.user_metadata?.organization_name || "شركة الشرق الكبرى للطلاء الخارجي";
     const organizationCode = currentSession.user.user_metadata?.organization_code || "";
     const { data, error: organizationError } = await supabaseClient.rpc("get_or_create_my_organization", { p_name: organizationName, p_code: organizationCode });
     if (organizationError) setError(organizationError.message);
@@ -651,7 +651,7 @@ function AuthScreen({ auth }) {
   const [mode, setMode] = useState("signin");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [organizationName, setOrganizationName] = useState("مصنع التكس والسيليكات");
+  const [organizationName, setOrganizationName] = useState("شركة الشرق الكبرى للطلاء الخارجي");
   const [organizationCode, setOrganizationCode] = useState("");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
@@ -666,7 +666,7 @@ function AuthScreen({ auth }) {
   return (
     <div dir="rtl" className="min-h-screen flex items-center justify-center p-4" style={{ background: "var(--bg)", fontFamily: "'Cairo', sans-serif" }}>
       <div className="w-full max-w-md rounded-2xl border p-6 shadow-sm" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>
-        <h1 className="text-xl font-bold mb-1" style={{ fontFamily: "'El Messiri', sans-serif", color: "var(--text-strong)" }}>مصنع التكس والسيليكات</h1>
+        <h1 className="text-xl font-bold mb-1" style={{ fontFamily: "'El Messiri', sans-serif", color: "var(--text-strong)" }}>شركة الشرق الكبرى للطلاء الخارجي</h1>
         <p className="text-sm mb-5" style={{ color: "var(--text-muted)" }}>{mode === "signin" ? "سجّل الدخول للوصول إلى بيانات الشركة" : "أنشئ حساب الشركة الأول"}</p>
         <div className="flex flex-col gap-3">
           {mode === "signup" && <>
@@ -741,7 +741,7 @@ function FactoryApp({ organizationId, organizationCode, email, onSignOut }) {
         <div className="px-2 pb-5 flex items-center gap-2">
           <img src="Earthlog.jpeg" alt="شعار الشركة" className="w-9 h-9 rounded-xl object-cover shrink-0" />
           <div>
-            <div className="text-white font-bold text-sm" style={{ fontFamily: "'El Messiri', sans-serif" }}>مصنع التكس والسيليكات</div>
+            <div className="text-white font-bold text-sm" style={{ fontFamily: "'El Messiri', sans-serif" }}>شركة الشرق الكبرى للطلاء الخارجي</div>
             <div className="text-[11px] text-stone-400">إدارة المحاسبة</div>
           </div>
         </div>
@@ -791,7 +791,7 @@ function FactoryApp({ organizationId, organizationCode, email, onSignOut }) {
         <div className="sm:hidden mb-4 rounded-xl border px-3 py-3 flex items-center gap-3" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>
           <img src="Earthlog.jpeg" alt="شعار الشركة" className="w-9 h-9 rounded-xl object-cover shrink-0" />
           <div className="min-w-0 flex-1">
-            <div className="text-sm font-bold truncate" style={{ fontFamily: "'El Messiri', sans-serif", color: "var(--text-strong)" }}>مصنع التكس والسيليكات</div>
+            <div className="text-sm font-bold truncate" style={{ fontFamily: "'El Messiri', sans-serif", color: "var(--text-strong)" }}>شركة الشرق الكبرى للطلاء الخارجي</div>
             <div className="text-[10px] truncate" style={{ color: "var(--text-muted)" }}>{email || "حساب الشركة"}{organizationCode ? " · رمز الشركة: " + organizationCode : ""}</div>
           </div>
           {email && <button onClick={onSignOut} className="shrink-0 text-xs px-2.5 py-1.5 rounded-lg border" style={{ color: "var(--text-body)", borderColor: "var(--card-border)" }}>تسجيل الخروج</button>}
@@ -1891,7 +1891,9 @@ function ContactsList({ kind, label, icon, collection, data, invoices, upsert, r
       {filtered.length === 0 ? <EmptyState icon={icon} title={`لا يوجد ${label} مسجّلون بعد`} /> : (
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
           {filtered.map((c) => {
-            const bal = contactBalance(c);
+            const bal = kind === "customers"
+              ? getCustomerOutstanding(c, projects, income).total
+              : contactBalance(c);
             return (
               <button key={c.id} onClick={() => setOpenId(c.id)} className="text-right rounded-2xl border p-4 flex flex-col gap-2" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>
                 <div className="flex items-center justify-between">
