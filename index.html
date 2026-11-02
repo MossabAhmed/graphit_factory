@@ -101,6 +101,28 @@ function Icon({ name, size = 16, color, style, className }) {
 // ---------- helpers ----------
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 const todayISO = () => new Date().toISOString().slice(0, 10);
+const dateTimeLocalNow = () => {
+  const date = new Date();
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+};
+const dateTimeLocalValue = (value) => {
+  if (!value) return dateTimeLocalNow();
+  return value.length === 10 ? `${value}T00:00` : value.slice(0, 16);
+};
+const formatDateTime = (value) => {
+  if (!value) return "";
+  const date = new Date(dateTimeLocalValue(value));
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString("ar-LY", { dateStyle: "medium", timeStyle: "short" });
+};
+const compareFinanceEntries = (a, b) => {
+  const aDate = String(a.date || "");
+  const bDate = String(b.date || "");
+  const aDay = aDate.slice(0, 10);
+  const bDay = bDate.slice(0, 10);
+  if (aDay !== bDay) return bDay.localeCompare(aDay);
+  return aDate.localeCompare(bDate) || String(a.id).localeCompare(String(b.id));
+};
 const fmt = (n) => Number(n || 0).toLocaleString("en-US");
 const positiveNumber = (value) => Number.isFinite(Number(value)) && Number(value) > 0;
 const nonNegativeNumber = (value) => Number.isFinite(Number(value)) && Number(value) >= 0;
@@ -1042,7 +1064,7 @@ function NewProjectModal({ onClose, onCreate, customers, upsert }) {
   const [dateCreated, setDateCreated] = useState(todayISO());
   const [initialPayment, setInitialPayment] = useState("");
   const [includeInitialPaymentInIncome, setIncludeInitialPaymentInIncome] = useState(true);
-  const [initialPaymentDate, setInitialPaymentDate] = useState(todayISO());
+  const [initialPaymentDate, setInitialPaymentDate] = useState(dateTimeLocalNow());
   const [initialPaymentNote, setInitialPaymentNote] = useState("");
   const [location, setLocation] = useState("");
   const [productType, setProductType] = useState("تكس");
@@ -1068,7 +1090,7 @@ function NewProjectModal({ onClose, onCreate, customers, upsert }) {
       <div className="flex flex-col gap-3">
         <div><FieldLabel>العميل</FieldLabel><CustomerPicker customers={customers} customerId={customerId} onSelect={setCustomerId} onCreateNew={handleCreateCustomer} /></div>
         <div><FieldLabel>رقم هاتف خاص بهذا المشروع (اختياري)</FieldLabel><TextInput value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="اتركه فارغًا لاستخدام هاتف العميل" /></div>
-        <div className="grid grid-cols-2 gap-3"><div><FieldLabel>تاريخ إنشاء المشروع</FieldLabel><TextInput type="date" value={dateCreated} onChange={(e) => setDateCreated(e.target.value)} /></div><div><FieldLabel>تاريخ الدفعة الأولى</FieldLabel><TextInput type="date" value={initialPaymentDate} onChange={(e) => setInitialPaymentDate(e.target.value)} /></div></div>
+        <div className="grid grid-cols-2 gap-3"><div><FieldLabel>تاريخ إنشاء المشروع</FieldLabel><TextInput type="date" value={dateCreated} onChange={(e) => setDateCreated(e.target.value)} /></div><div><FieldLabel>تاريخ ووقت الدفعة الأولى</FieldLabel><TextInput type="datetime-local" value={initialPaymentDate} onChange={(e) => setInitialPaymentDate(e.target.value)} /></div></div>
         <div><FieldLabel>الواصل من الزبون عند إنشاء المشروع (اختياري)</FieldLabel><TextInput type="number" value={initialPayment} onChange={(e) => setInitialPayment(e.target.value)} placeholder="اتركه فارغًا إذا لم يدفع" /></div>
         {positiveNumber(initialPayment) && <label className="flex items-center gap-2 text-xs" style={{ color: "var(--text-body)" }}><input type="checkbox" checked={includeInitialPaymentInIncome} onChange={(e) => setIncludeInitialPaymentInIncome(e.target.checked)} /> احتساب الدفعة ضمن الواردات</label>}
         {positiveNumber(initialPayment) && <div><FieldLabel>ملاحظة الدفعة (اختياري)</FieldLabel><TextInput value={initialPaymentNote} onChange={(e) => setInitialPaymentNote(e.target.value)} /></div>}
@@ -1383,16 +1405,18 @@ function ProjectDetail({ project, onClose, onSave, onDelete, onDeletePayment, on
 function RecordIncomeInline({ project, onAdd }) {
   const [amount, setAmount] = useState("");
   const [note, setNote] = useState("");
+  const [date, setDate] = useState(dateTimeLocalNow());
   const [includeInIncome, setIncludeInIncome] = useState(true);
   const submit = () => {
     if (!positiveNumber(amount)) { notify("أدخل مبلغًا موجبًا."); return; }
-    onAdd({ id: uid(), date: todayISO(), amount: Number(amount), includeInIncome, description: note.trim() || "دفعة من الزبون" });
-    setAmount(""); setNote(""); setIncludeInIncome(true);
+    onAdd({ id: uid(), date, amount: Number(amount), includeInIncome, description: note.trim() || "دفعة من الزبون" });
+    setAmount(""); setNote(""); setDate(dateTimeLocalNow()); setIncludeInIncome(true);
   };
   return (
     <div className="rounded-xl border p-3 flex flex-col gap-2" style={{ borderColor: "var(--card-border)" }}>
       <div className="text-sm font-medium flex items-center gap-1.5" style={{ color: "var(--text-body)" }}><Icon name="wallet" size={14} /> تسجيل وارد من الزبون</div>
       <div className="flex gap-2"><TextInput type="number" placeholder="المبلغ المستلم" value={amount} onChange={(e) => setAmount(e.target.value)} /><TextInput placeholder="ملاحظة (اختياري)" value={note} onChange={(e) => setNote(e.target.value)} /></div>
+      <div><FieldLabel>التاريخ والساعة</FieldLabel><TextInput type="datetime-local" value={date} onChange={(e) => setDate(e.target.value)} /></div>
       <label className="flex items-center gap-2 text-xs" style={{ color: "var(--text-body)" }}><input type="checkbox" checked={includeInIncome} onChange={(e) => setIncludeInIncome(e.target.checked)} /> احتساب الدفعة ضمن الواردات</label>
       <GhostButton onClick={submit}><Icon name="plus" size={14} /> إضافة الدفعة</GhostButton>
     </div>
@@ -1712,7 +1736,7 @@ function FinanceTab({ expenses, income, projects, customers = [], upsert, remove
   const [pendingDelete, setPendingDelete] = useState(null);
   const allIncome = getAllProjectIncome(projects, income);
   const list = sub === "expenses" ? expenses : allIncome;
-  const sorted = [...list].sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  const sorted = [...list].sort(compareFinanceEntries);
   const totalExpenses = expenses.reduce((s, x) => s + Number(x.amount || 0), 0);
   const totalIncome = allIncome.reduce((s, x) => s + Number(x.amount || 0), 0);
   const saveIncome = (nextIncome) => {
@@ -1763,7 +1787,7 @@ function FinanceTab({ expenses, income, projects, customers = [], upsert, remove
           <div className="flex flex-col divide-y" style={{ borderColor: "var(--divider)" }}>
             {sorted.map((x) => (
               <div key={x.id} className="flex items-center justify-between px-4 py-3 gap-2" style={{ borderColor: "var(--divider)" }}>
-                <div className="min-w-0"><div className="text-sm font-medium" style={{ color: "var(--text-body)" }}>{sub === "expenses" ? x.type : (x.customerName || "وارد")}</div><div className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>{x.date} {x.projectId ? "· " + (projects.find((project) => project.id === x.projectId)?.customerName || "مشروع") : ""} {x.description ? "· " + x.description : ""}</div></div>
+                <div className="min-w-0"><div className="text-sm font-medium" style={{ color: "var(--text-body)" }}>{sub === "expenses" ? x.type : (x.customerName || "وارد")}</div><div className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>{formatDateTime(x.date)} {x.projectId ? "· " + (projects.find((project) => project.id === x.projectId)?.customerName || "مشروع") : ""} {x.description ? "· " + x.description : ""}</div></div>
                 <div className="flex items-center gap-3 shrink-0">
                   <span className="font-semibold" style={{ color: sub === "expenses" ? "#A34632" : "#4B6350" }}>{sub === "expenses" ? "−" : "+"}{fmt(x.amount)}</span>
                   {pendingDelete === x.id ? <ConfirmInline onConfirm={() => { sub === "expenses" ? remove("expenses", x.id) : deleteIncome(x); setPendingDelete(null); }} onCancel={() => setPendingDelete(null)} /> : <div className="flex items-center gap-3"><button onClick={() => sub === "expenses" ? setEditingExpense(x) : setEditingIncome(x)} className="text-xs" style={{ color: "var(--accent)" }}>تعديل</button><button onClick={() => setPendingDelete(x.id)} style={{ color: "var(--text-muted)" }}><Icon name="trash" size={14} /></button></div>}
@@ -1783,13 +1807,13 @@ function FinanceTab({ expenses, income, projects, customers = [], upsert, remove
 function AddExpenseForm({ onAdd, initialExpense = null }) {
   const [type, setType] = useState(initialExpense?.type || EXPENSE_TYPES[0]);
   const [amount, setAmount] = useState(initialExpense?.amount ? String(initialExpense.amount) : "");
-  const [date, setDate] = useState(initialExpense?.date || todayISO());
+  const [date, setDate] = useState(dateTimeLocalValue(initialExpense?.date));
   const [description, setDescription] = useState(initialExpense?.description || "");
   const submit = () => { if (!positiveNumber(amount) || Number(amount) < 0) { notify("المبلغ يجب أن يكون موجبًا."); return; } onAdd({ id: initialExpense?.id || uid(), type, amount: Number(amount), date, description: description.trim() }); };
   return (
     <div className="flex flex-col gap-3">
       <div><FieldLabel>نوع المصروف</FieldLabel><Select value={type} onChange={(e) => setType(e.target.value)}>{EXPENSE_TYPES.map((t) => <option key={t}>{t}</option>)}</Select></div>
-      <div className="grid grid-cols-2 gap-3"><div><FieldLabel>المبلغ</FieldLabel><TextInput type="number" value={amount} onChange={(e) => setAmount(e.target.value)} /></div><div><FieldLabel>التاريخ</FieldLabel><TextInput type="date" value={date} onChange={(e) => setDate(e.target.value)} /></div></div>
+      <div className="grid grid-cols-2 gap-3"><div><FieldLabel>المبلغ</FieldLabel><TextInput type="number" value={amount} onChange={(e) => setAmount(e.target.value)} /></div><div><FieldLabel>التاريخ والساعة</FieldLabel><TextInput type="datetime-local" value={date} onChange={(e) => setDate(e.target.value)} /></div></div>
       <div><FieldLabel>وصف (اختياري)</FieldLabel><TextInput value={description} onChange={(e) => setDescription(e.target.value)} /></div>
       <PrimaryButton onClick={submit} full disabled={!amount}><Icon name="plus" size={16} /> {initialExpense ? "حفظ تعديل المصروف" : "حفظ المصروف"}</PrimaryButton>
     </div>
@@ -1801,7 +1825,7 @@ function AddIncomeForm({ onAdd, projects, customers = [], initialIncome = null }
   const [customerId, setCustomerId] = useState(initialCustomerId);
   const [customerName, setCustomerName] = useState(initialIncome?.customerName || "");
   const [amount, setAmount] = useState(initialIncome?.amount ? String(initialIncome.amount) : "");
-  const [date, setDate] = useState(initialIncome?.date || todayISO());
+  const [date, setDate] = useState(dateTimeLocalValue(initialIncome?.date));
   const [description, setDescription] = useState(initialIncome?.description || "");
   const [includeInIncome, setIncludeInIncome] = useState(initialIncome?.includeInIncome !== false);
   const submit = () => {
@@ -1845,7 +1869,7 @@ function AddIncomeForm({ onAdd, projects, customers = [], initialIncome = null }
           )}
         </div>
       )}
-      <div className="grid grid-cols-2 gap-3"><div><FieldLabel>المبلغ</FieldLabel><TextInput type="number" value={amount} onChange={(e) => setAmount(e.target.value)} /></div><div><FieldLabel>التاريخ</FieldLabel><TextInput type="date" value={date} onChange={(e) => setDate(e.target.value)} /></div></div>
+      <div className="grid grid-cols-2 gap-3"><div><FieldLabel>المبلغ</FieldLabel><TextInput type="number" value={amount} onChange={(e) => setAmount(e.target.value)} /></div><div><FieldLabel>التاريخ والساعة</FieldLabel><TextInput type="datetime-local" value={date} onChange={(e) => setDate(e.target.value)} /></div></div>
       <label className="flex items-center gap-2 text-xs" style={{ color: "var(--text-body)" }}><input type="checkbox" checked={includeInIncome} onChange={(e) => setIncludeInIncome(e.target.checked)} /> احتساب الدفعة ضمن الواردات</label>
       <div><FieldLabel>وصف (اختياري)</FieldLabel><TextInput value={description} onChange={(e) => setDescription(e.target.value)} /></div>
       <PrimaryButton onClick={submit} full disabled={!amount}><Icon name="plus" size={16} /> {initialIncome ? "حفظ تعديل الوارد" : "حفظ الوارد"}</PrimaryButton>
