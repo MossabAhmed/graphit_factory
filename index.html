@@ -115,6 +115,11 @@ const formatDateTime = (value) => {
   const date = new Date(dateTimeLocalValue(value));
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString("ar-LY", { dateStyle: "medium", timeStyle: "short" });
 };
+const formatDay = (value) => {
+  if (!value) return "بدون تاريخ";
+  const date = new Date(dateTimeLocalValue(value));
+  return Number.isNaN(date.getTime()) ? value.slice(0, 10) : date.toLocaleDateString("ar-LY", { dateStyle: "full" });
+};
 const compareFinanceEntries = (a, b) => {
   const aDate = String(a.date || "");
   const bDate = String(b.date || "");
@@ -1737,6 +1742,13 @@ function FinanceTab({ expenses, income, projects, customers = [], upsert, remove
   const allIncome = getAllProjectIncome(projects, income);
   const list = sub === "expenses" ? expenses : allIncome;
   const sorted = [...list].sort(compareFinanceEntries);
+  const grouped = sorted.reduce((groups, entry) => {
+    const day = String(entry.date || "").slice(0, 10) || "unknown";
+    const existing = groups.find((group) => group.day === day);
+    if (existing) existing.entries.push(entry);
+    else groups.push({ day, entries: [entry] });
+    return groups;
+  }, []);
   const totalExpenses = expenses.reduce((s, x) => s + Number(x.amount || 0), 0);
   const totalIncome = allIncome.reduce((s, x) => s + Number(x.amount || 0), 0);
   const saveIncome = (nextIncome) => {
@@ -1784,15 +1796,25 @@ function FinanceTab({ expenses, income, projects, customers = [], upsert, remove
       </div>
       {sorted.length === 0 ? <EmptyState icon="wallet" title={sub === "expenses" ? "لا توجد مصاريف مسجّلة" : "لا توجد واردات مسجّلة"} /> : (
         <div className="rounded-2xl border overflow-hidden" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>
-          <div className="flex flex-col divide-y" style={{ borderColor: "var(--divider)" }}>
-            {sorted.map((x) => (
-              <div key={x.id} className="flex items-center justify-between px-4 py-3 gap-2" style={{ borderColor: "var(--divider)" }}>
-                <div className="min-w-0"><div className="text-sm font-medium" style={{ color: "var(--text-body)" }}>{sub === "expenses" ? x.type : (x.customerName || "وارد")}</div><div className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>{formatDateTime(x.date)} {x.projectId ? "· " + (projects.find((project) => project.id === x.projectId)?.customerName || "مشروع") : ""} {x.description ? "· " + x.description : ""}</div></div>
-                <div className="flex items-center gap-3 shrink-0">
-                  <span className="font-semibold" style={{ color: sub === "expenses" ? "#A34632" : "#4B6350" }}>{sub === "expenses" ? "−" : "+"}{fmt(x.amount)}</span>
-                  {pendingDelete === x.id ? <ConfirmInline onConfirm={() => { sub === "expenses" ? remove("expenses", x.id) : deleteIncome(x); setPendingDelete(null); }} onCancel={() => setPendingDelete(null)} /> : <div className="flex items-center gap-3"><button onClick={() => sub === "expenses" ? setEditingExpense(x) : setEditingIncome(x)} className="text-xs" style={{ color: "var(--accent)" }}>تعديل</button><button onClick={() => setPendingDelete(x.id)} style={{ color: "var(--text-muted)" }}><Icon name="trash" size={14} /></button></div>}
+          <div className="flex flex-col" style={{ borderColor: "var(--divider)" }}>
+            {grouped.map((group) => (
+              <React.Fragment key={group.day}>
+                <div className="flex items-center justify-between px-4 py-2.5 border-b border-t" style={{ background: "var(--divider)", borderColor: "var(--card-border)" }}>
+                  <span className="text-xs font-semibold" style={{ color: "var(--text-body)" }}>{group.day === "unknown" ? "بدون تاريخ" : formatDay(group.day)}</span>
+                  <span className="text-xs font-semibold" style={{ color: sub === "expenses" ? "#A34632" : "#4B6350" }}>إجمالي {sub === "expenses" ? "المصاريف" : "الواردات"}: {fmt(group.entries.reduce((sum, entry) => sum + Number(entry.amount || 0), 0))}</span>
                 </div>
-              </div>
+                <div className="flex flex-col divide-y" style={{ borderColor: "var(--divider)" }}>
+                  {group.entries.map((x) => (
+                <div key={x.id} className="flex items-center justify-between px-4 py-3 gap-2" style={{ borderColor: "var(--divider)" }}>
+                  <div className="min-w-0"><div className="text-sm font-medium" style={{ color: "var(--text-body)" }}>{sub === "expenses" ? x.type : (x.customerName || "وارد")}</div><div className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>{formatDateTime(x.date)} {x.projectId ? "· " + (projects.find((project) => project.id === x.projectId)?.customerName || "مشروع") : ""} {x.description ? "· " + x.description : ""}</div></div>
+                  <div className="flex items-center gap-3 shrink-0">
+                    <span className="font-semibold" style={{ color: sub === "expenses" ? "#A34632" : "#4B6350" }}>{sub === "expenses" ? "−" : "+"}{fmt(x.amount)}</span>
+                    {pendingDelete === x.id ? <ConfirmInline onConfirm={() => { sub === "expenses" ? remove("expenses", x.id) : deleteIncome(x); setPendingDelete(null); }} onCancel={() => setPendingDelete(null)} /> : <div className="flex items-center gap-3"><button onClick={() => sub === "expenses" ? setEditingExpense(x) : setEditingIncome(x)} className="text-xs" style={{ color: "var(--accent)" }}>تعديل</button><button onClick={() => setPendingDelete(x.id)} style={{ color: "var(--text-muted)" }}><Icon name="trash" size={14} /></button></div>}
+                  </div>
+                </div>
+                  ))}
+                </div>
+              </React.Fragment>
             ))}
           </div>
         </div>
