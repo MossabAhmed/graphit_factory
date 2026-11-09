@@ -840,7 +840,7 @@ function FactoryApp({ organizationId, organizationCode, email, onSignOut }) {
         )}
         {tab === "projects" && <Projects projects={projects} onOpen={(id) => setOpenProjectId(id)} onNew={() => setShowNewProject(true)} />}
         {tab === "invoices" && <InvoicesTab invoices={invoices} projects={projects} suppliers={suppliers} upsert={upsert} remove={remove} />}
-        {tab === "finance" && <FinanceTab expenses={expenses} income={income} projects={projects} customers={customers} upsert={upsert} remove={remove} />}
+        {tab === "finance" && <FinanceTab expenses={expenses} income={income} projects={projects} invoices={invoices} suppliers={suppliers} customers={customers} upsert={upsert} remove={remove} />}
         {tab === "accounts" && (
           <AccountsTab sub={accountsSub} setSub={setAccountsSub}
             customers={customers} suppliers={suppliers} workers={workers} invoices={invoices} upsert={upsert} remove={remove}
@@ -1306,6 +1306,39 @@ function printAccountStatement(kind, contact, { invoices = [], projects = [], in
   printWindow.onload = triggerPrint;
   window.setTimeout(triggerPrint, 700);
 }
+function printMonthlyFinanceReport({ month, projects = [], invoices = [], expenses = [], income = [], customers = [], suppliers = [] }) {
+  const allIncome = getAllProjectIncome(projects, income);
+  const monthIncome = allIncome.filter((entry) => monthKey(entry.date) === month);
+  const monthExpenses = expenses.filter((entry) => monthKey(entry.date) === month);
+  const monthInvoices = invoices.filter((invoice) => monthKey(invoice.date) === month);
+  const totalIncome = monthIncome.reduce((sum, entry) => sum + Number(entry.amount || 0), 0);
+  const totalExpenses = monthExpenses.reduce((sum, entry) => sum + Number(entry.amount || 0), 0);
+  const totalInvoices = monthInvoices.reduce((sum, invoice) => sum + Number(invoice.amount || 0), 0);
+  const paidInvoices = getPaidInvoicesTotal(invoices, suppliers, month);
+  const net = totalIncome - totalExpenses - paidInvoices;
+  const totalCustomerDebt = customers.reduce((sum, customer) => sum + Math.max(0, getCustomerOutstanding(customer, projects, income).total), 0);
+  const totalSupplierDebt = suppliers.reduce((sum, supplier) => sum + getSupplierStatement(supplier, invoices).owed, 0);
+  const monthLabel = new Date(`${month}-01T00:00`).toLocaleDateString("ar-LY", { year: "numeric", month: "long" });
+  const logoUrl = new URL("Earthlog.jpeg", window.location.href).href;
+  const printWindow = window.open("", "_blank", "width=900,height=1000");
+  if (!printWindow) { notify("يرجى السماح بالنوافذ المنبثقة لطباعة التقرير."); return; }
+  const row = (label, value, className = "") => `<div class="summary-row ${className}"><span>${label}</span><strong>${fmt(value)}</strong></div>`;
+  const html = `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="UTF-8" /><title>التقرير المالي الشهري - ${escapeHtml(monthLabel)}</title><style>
+    @page{size:A4 portrait;margin:10mm}*{box-sizing:border-box;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+    body{margin:0;background:#eef2f1;color:#17212b;font-family:'Cairo',Arial,Tahoma,sans-serif;font-size:12px}.page{width:210mm;margin:0 auto;background:#fff;padding:8mm 12mm 10mm}.topline{height:5mm;margin:-8mm -12mm 6mm;background:linear-gradient(90deg,#0b3e42,#125b5f,#d8a84e)}
+    .header{display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid #dce6e7;padding-bottom:10px}.identity{display:flex;align-items:center;gap:12px}.logo{width:54px;height:54px;border-radius:12px;object-fit:cover}.company{font-size:19px;font-weight:800;color:#0b3e42}.subtitle,.meta,.period{font-size:11px;color:#64727d}.title{font-size:20px;font-weight:800;color:#0b3e42;margin:16px 0 4px}
+    .summary{border:1px solid #dce6e7;border-radius:12px;overflow:hidden;margin-bottom:16px}.summary-row{display:flex;justify-content:space-between;padding:8px 12px;border-bottom:1px solid #dce6e7}.summary-row:last-child{border-bottom:0}.summary-row.main{background:#125b5f;color:#fff;font-size:14px}.summary-row.debt{background:#fff5f1;color:#a04336}
+    .section-title{font-size:14px;font-weight:800;color:#0b3e42;margin:14px 0 6px}table{width:100%;border-collapse:collapse;border:1px solid #dce6e7}th{background:#0b3e42;color:#fff;padding:7px 5px}td{padding:6px 5px;border-top:1px solid #dce6e7;text-align:center}td.name{text-align:right}tbody tr:nth-child(even) td{background:#f8fbfa}.footer{margin-top:22px;text-align:center;color:#64727d;font-size:10px}@media print{body{background:#fff}.page{width:auto;margin:0;padding:0}.topline{margin:0 0 6mm}}
+  </style></head><body><main class="page"><div class="topline"></div><header class="header"><div class="identity"><img class="logo" src="${logoUrl}" alt="الشعار"/><div><div class="company">شركة مجموعة الشرق الكبرى</div><div class="subtitle">للطلاء الخارجي</div></div></div><div class="meta">تاريخ الطباعة<br/><strong>${formatDateTime(new Date().toISOString().slice(0, 16))}</strong></div></header>
+    <h1 class="title">التقرير المالي الشهري</h1><div class="period">عن شهر ${escapeHtml(monthLabel)}</div><section class="summary">${row("إجمالي الواردات", totalIncome)}${row("إجمالي المصاريف", totalExpenses)}${row("إجمالي الفواتير", totalInvoices)}${row("الفواتير المدفوعة فعليًا", paidInvoices)}${row("الصافي النقدي", net, "main")}${row("إجمالي مستحقاتنا على العملاء", totalCustomerDebt, "debt")}${row("إجمالي مستحقات الموردين", totalSupplierDebt, "debt")}</section>
+    <div class="section-title">ملخص الشهر</div><table><thead><tr><th>النوع</th><th>عدد العمليات</th><th>الإجمالي</th></tr></thead><tbody><tr><td class="name">الواردات</td><td>${monthIncome.length}</td><td>${fmt(totalIncome)}</td></tr><tr><td class="name">المصاريف</td><td>${monthExpenses.length}</td><td>${fmt(totalExpenses)}</td></tr><tr><td class="name">الفواتير</td><td>${monthInvoices.length}</td><td>${fmt(totalInvoices)}</td></tr></tbody></table><div class="footer">تم إنشاء هذا التقرير آليًا من نظام الحسابات.</div></main></body></html>`;
+  printWindow.document.write(html);
+  printWindow.document.close();
+  let printed = false;
+  const triggerPrint = () => { if (printed) return; printed = true; try { printWindow.focus(); printWindow.print(); } catch (error) { console.error("Print failed:", error); } };
+  printWindow.onload = triggerPrint;
+  window.setTimeout(triggerPrint, 700);
+}
 function WaiveInline({ remaining, waived, onApply, onReset }) {
   const [amount, setAmount] = useState("");
   const [note, setNote] = useState("");
@@ -1557,6 +1590,7 @@ function InvoicesTab({ invoices, projects, suppliers, upsert, remove }) {
   const [typeFilter, setTypeFilter] = useState("الكل");
   const [supplierQuery, setSupplierQuery] = useState("");
   const [invoiceNumberQuery, setInvoiceNumberQuery] = useState("");
+  const [monthFilter, setMonthFilter] = useState("");
   const [pendingDelete, setPendingDelete] = useState(null);
   const [expanded, setExpanded] = useState(null);
 
@@ -1564,9 +1598,10 @@ function InvoicesTab({ invoices, projects, suppliers, upsert, remove }) {
   const normalizedInvoiceNumberQuery = normalizeName(invoiceNumberQuery);
   const filtered = invoices.filter((i) => {
     const matchType = typeFilter === "الكل" || i.type === typeFilter;
+    const matchMonth = !monthFilter || monthKey(i.date) === monthFilter;
     const matchSupplier = !normalizedSupplierQuery || normalizeName(i.supplierName).includes(normalizedSupplierQuery);
     const matchInvoiceNumber = !normalizedInvoiceNumberQuery || normalizeName(i.invoiceNumber).includes(normalizedInvoiceNumberQuery);
-    return matchType && matchSupplier && matchInvoiceNumber;
+    return matchType && matchMonth && matchSupplier && matchInvoiceNumber;
   });
   const total = filtered.reduce((s, i) => s + Number(i.amount || 0), 0);
   const sorted = [...filtered].sort((a, b) => (b.date || "").localeCompare(a.date || ""));
@@ -1602,6 +1637,7 @@ function InvoicesTab({ invoices, projects, suppliers, upsert, remove }) {
         <div className="flex gap-1.5 flex-wrap">{["الكل", ...INVOICE_TYPES].map((t) => <button key={t} onClick={() => setTypeFilter(t)} className="text-xs px-3 py-2 rounded-lg border transition" style={typeFilter === t ? { background: "var(--accent)", borderColor: "var(--accent)", color: "white" } : { background: "var(--card-bg)", borderColor: "var(--card-border)", color: "var(--text-body)" }}>{t}</button>)}</div>
         <div className="relative min-w-[180px] flex-1"><span className="absolute right-3 top-1/2 -translate-y-1/2" style={{ color: "var(--text-muted)" }}><Icon name="search" size={15} /></span><TextInput value={supplierQuery} onChange={(e) => setSupplierQuery(e.target.value)} placeholder="بحث باسم المورد..." className="pr-9" /></div>
         <div className="relative min-w-[150px] flex-1"><span className="absolute right-3 top-1/2 -translate-y-1/2" style={{ color: "var(--text-muted)" }}>#</span><TextInput value={invoiceNumberQuery} onChange={(e) => setInvoiceNumberQuery(e.target.value)} placeholder="بحث برقم الفاتورة..." className="pr-8" /></div>
+        <div className="min-w-[150px] flex-1"><TextInput type="month" value={monthFilter} onChange={(e) => setMonthFilter(e.target.value)} aria-label="فلترة الفواتير حسب الشهر" /></div>
         <div className="mr-auto rounded-lg px-4 py-2 text-sm" style={{ background: "var(--divider)" }}><span className="ml-1" style={{ color: "var(--text-muted)" }}>الإجمالي:</span><span className="font-bold" style={{ color: "var(--text-strong)" }}>{fmt(total)}</span></div>
       </div>
       {sorted.length === 0 ? <EmptyState icon="receipt" title="لا توجد فواتير" sub="أضف أول فاتورة لتبدأ" /> : (
@@ -1733,7 +1769,7 @@ function AddInvoiceForm({ onAdd, projects, suppliers, upsert, initialInvoice = n
 }
 
 // ---------- Finance ----------
-function FinanceTab({ expenses, income, projects, customers = [], upsert, remove }) {
+function FinanceTab({ expenses, income, projects, invoices = [], suppliers = [], customers = [], upsert, remove }) {
   const [sub, setSub] = useState("expenses");
   const [showAdd, setShowAdd] = useState(false);
   const [editingExpense, setEditingExpense] = useState(null);
@@ -1785,7 +1821,7 @@ function FinanceTab({ expenses, income, projects, customers = [], upsert, remove
         <div><h1 className="text-xl font-bold" style={{ fontFamily: "'El Messiri', sans-serif", color: "var(--text-strong)" }}>المصاريف والواردات</h1><p className="text-sm mt-0.5" style={{ color: "var(--text-muted)" }}>مصاريف تشغيل المصنع، وواردات المشاريع</p></div>
         <PrimaryButton onClick={() => setShowAdd(true)}><Icon name="plus" size={16} /> {sub === "expenses" ? "مصروف جديد" : "وارد جديد"}</PrimaryButton>
       </div>
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <StatCard icon="trendDown" label="إجمالي المصاريف" value={fmt(totalExpenses)} accent="#A34632" />
         <StatCard icon="trendUp" label="إجمالي الواردات" value={fmt(totalIncome)} accent="#4B6350" />
         <StatCard icon="wallet" label="الصافي" value={fmt(totalIncome - totalExpenses)} accent="#8A6A32" />
@@ -2278,6 +2314,7 @@ function ReportsTab({ month, setMonth, projects, invoices, expenses, income, att
         <div className="flex items-center gap-2">
           <TextInput type="month" value={month} onChange={(e) => setMonth(e.target.value)} className="max-w-[170px]" />
           <PrimaryButton onClick={exportMonth}><Icon name="download" size={16} /> تصدير التقرير</PrimaryButton>
+          <GhostButton onClick={() => printMonthlyFinanceReport({ month, projects, invoices, expenses, income, customers, suppliers })}><Icon name="receipt" size={16} /> طباعة التقرير</GhostButton>
         </div>
       </div>
 
