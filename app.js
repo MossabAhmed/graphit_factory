@@ -2433,7 +2433,7 @@
               "div",
               {
                 className:
-                  "sm:hidden fixed bottom-0 inset-x-0 z-40 flex justify-start gap-1 px-2 py-1 overflow-x-auto",
+                  "mobile-bottom-nav sm:hidden fixed bottom-0 inset-x-0 z-40 flex justify-start gap-1 px-2 py-1 overflow-x-auto",
                 style: { background: "var(--sidebar-bg)" },
               },
               _.map((z) => {
@@ -2588,7 +2588,7 @@
               ),
             React.createElement(
               "main",
-              { className: "flex-1 min-w-0 p-4 sm:p-6 pb-24 sm:pb-6" },
+              { className: "flex-1 min-w-0 overflow-x-hidden p-4 sm:p-6 pb-24 sm:pb-6" },
               React.createElement(
                 "div",
                 {
@@ -8679,7 +8679,7 @@
         ),
         React.createElement(
           "div",
-          { className: "flex items-center gap-2" },
+          { className: "reports-actions flex items-center gap-2 flex-wrap w-full sm:w-auto" },
           React.createElement(E, {
             type: "month",
             value: e,
@@ -8912,7 +8912,7 @@
       ),
       React.createElement(
         "div",
-        { className: "grid grid-cols-2 lg:grid-cols-4 gap-3" },
+        { className: "reports-summary-grid grid grid-cols-2 lg:grid-cols-4 gap-3" },
         React.createElement(te, {
           icon: "trendUp",
           label:
@@ -8958,7 +8958,7 @@
         ),
         React.createElement(
           "div",
-          { className: "grid grid-cols-2 lg:grid-cols-3 gap-3 mb-3" },
+          { className: "reports-debt-grid grid grid-cols-2 lg:grid-cols-3 gap-3 mb-3" },
           React.createElement(te, {
             icon: "users",
             label:
