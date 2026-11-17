@@ -1,7 +1,7 @@
 (function (root, factory) {
-  if (typeof module === "object" && module.exports) module.exports = factory();
-  else root.FactoryFinance = factory();
-})(typeof globalThis !== "undefined" ? globalThis : window, function () {
+  if (typeof module === "object" && module.exports) module.exports = factory(require("../domain/suppliers.js"));
+  else root.FactoryFinance = factory(root.FactoryDomain && root.FactoryDomain.suppliers);
+})(typeof globalThis !== "undefined" ? globalThis : window, function (suppliersDomain) {
   "use strict";
 
   function monthOf(value) {
@@ -17,16 +17,8 @@
     return rows.reduce((total, row) => total + amount(row.amount), 0);
   }
 
-  function paidInvoicesForMonth(invoices, suppliers, month) {
-    const invoicePayments = (invoices || [])
-      .filter((row) => monthOf(row.date) === month && !row.debtTransactionId)
-      .reduce((total, row) => total + amount(row.amount), 0);
-    const supplierPayments = (suppliers || [])
-      .flatMap((supplier) => supplier.transactions || [])
-      .filter((row) => row.supplierPayment && monthOf(row.date) === month)
-      .reduce((total, row) => total + Math.max(0, amount(row.amount)), 0);
-    return invoicePayments + supplierPayments;
-  }
+  const paidInvoicesForMonth = (invoices, suppliers, month) =>
+    suppliersDomain.paidInvoicesForMonth(invoices || [], suppliers || [], month);
 
   function buildAnnualRows({ year, invoices = [], expenses = [], income = [], suppliers = [] }) {
     const normalizedYear = String(year || new Date().getFullYear()).slice(0, 4);

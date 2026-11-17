@@ -1,0 +1,40 @@
+# موقع ثابت بلا خطوة بناء: Netlify ينشر المجلد كما هو.
+[build]
+  publish = "."
+
+# ملفات المشروع التي ليست جزءًا من الموقع: لا تُعرض للعامة بعد النشر.
+[[redirects]]
+  from = "/supabase-schema.sql"
+  to = "/404.html"
+  status = 404
+  force = true
+
+[[redirects]]
+  from = "/tests/*"
+  to = "/404.html"
+  status = 404
+  force = true
+
+[[redirects]]
+  from = "/README.md"
+  to = "/404.html"
+  status = 404
+  force = true
+
+[[redirects]]
+  from = "/TODO.md"
+  to = "/404.html"
+  status = 404
+  force = true
+
+[[redirects]]
+  from = "/package.json"
+  to = "/404.html"
+  status = 404
+  force = true
+
+[[redirects]]
+  from = "/netlify.toml"
+  to = "/404.html"
+  status = 404
+  force = true

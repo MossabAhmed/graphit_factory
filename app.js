@@ -1,5 +1,11 @@
 (() => {
   const { useState: y, useEffect: be, useMemo: ke, useRef: ye } = React;
+  const FD = window.FactoryDomain;
+  if (!FD || !FD.money || !FD.projects || !FD.suppliers || !FD.invoiceNumber) {
+    const __root = document.getElementById("root");
+    if (__root) __root.textContent = "تعذر تحميل ملفات الحسابات (src/domain). تأكد من رفع مجلد src كاملًا مع الموقع.";
+    throw new Error("FactoryDomain modules are missing");
+  }
   var nt, lt;
   try {
     const e = localStorage.getItem("factory_theme"),
@@ -15,6 +21,7 @@
   const it = "https://vztrttetazdswwtroude.supabase.co",
     ct = "sb_publishable_llWBFoeSd2chUVvsqCkInA_8zMmyIZC";
   var dt;
+  const __cfgOk = it.startsWith("https://") && !ct.startsWith("YOUR_");
   const _e =
       it.startsWith("https://") &&
       !ct.startsWith("YOUR_") &&
@@ -434,8 +441,8 @@
         : t.localeCompare(r) || String(e.id).localeCompare(String(a.id));
     },
     N = (e) => Number(e || 0).toLocaleString("en-US"),
-    H = (e) => Number.isFinite(Number(e)) && Number(e) > 0,
-    pe = (e) => Number.isFinite(Number(e)) && Number(e) >= 0,
+    H = FD.money.isPositive,
+    pe = FD.money.isNonNegative,
     pt = (e, a) => {
       const t = { ...e, ...a };
       return (
@@ -454,63 +461,16 @@
         t
       );
     },
-    vt = (e, a) =>
-      (e || [])
-        .filter((t) => String(t[a] || "").trim() && H(t.total))
-        .reduce((t, r) => t + Number(r.total || 0), 0),
-    kt = (e, a) => {
-      const t = Math.round(Number(e || 0) * 1e3) / 1e3,
-        r = Math.round(Number(a || 0) * 1e3) / 1e3;
-      return {
-        grossAmount: t,
-        discountAmount: r,
-        netAmount: Math.round((t - r) * 1e3) / 1e3,
-      };
-    },
-    re = (e) => (e || "").slice(0, 7),
-    oe = (e) =>
-      String(e || "")
-        .trim()
-        .replace(/\s+/g, " ")
-        .toLocaleLowerCase("ar"),
+    vt = FD.money.itemsTotal,
+    kt = FD.money.applyDiscount,
+    re = FD.money.monthKey,
+    oe = FD.money.normalizeName,
     qe = (e, a, t = null) =>
       (e || []).some((r) => r.id !== t && oe(r.name) === oe(a)),
-    we = (e) =>
-      (e.transactions || []).reduce(
-        (a, t) =>
-          a + (t.type === "debit" ? Number(t.amount) : -Number(t.amount)),
-        0,
-      ),
-    Ct = (e, a) =>
-      a.filter(
-        (t) =>
-          t.customerId === e.id || (!t.customerId && t.customerName === e.name),
-      ),
-    We = (e, a = []) =>
-      (a || [])
-        .filter(
-          (t) =>
-            !t.projectId &&
-            Number(t.amount) > 0 &&
-            (t.customerId
-              ? t.customerId === e.id
-              : t.customerName && oe(t.customerName) === oe(e.name)),
-        )
-        .sort((t, r) => (t.date || "").localeCompare(r.date || "")),
-    Oe = (e, a, t) => {
-      const r = we(e),
-        i = Ct(e, a).map((o) => Ce(o, t)),
-        d = i.reduce((o, l) => o + l.remaining, 0),
-        b = i.reduce((o, l) => o + l.surplus, 0),
-        v = We(e, t).reduce((o, l) => o + Number(l.amount || 0), 0);
-      return {
-        ledger: r,
-        projectsRemaining: d,
-        projectsSurplus: b,
-        directPaid: v,
-        total: r + d - b - v,
-      };
-    },
+    we = FD.projects.ledgerBalance,
+    Ct = FD.projects.customerProjects,
+    We = FD.projects.customerDirectPayments,
+    Oe = FD.projects.customerOutstanding,
     Y = (e) =>
       String(e != null ? e : "").replace(
         /[&<>"']/g,
@@ -636,88 +596,13 @@
       (Number(e) < 0 ? "\u0633\u0627\u0644\u0628 " : "") + i.join(" \u0648")
     );
   }
-  const $e = (e, a = []) => {
-      const t = (e.payments || []).map((d) => ({
-          ...d,
-          paymentId: d.paymentId || d.id,
-          projectId: e.id,
-        })),
-        r = a
-          .filter((d) => d.projectId === e.id)
-          .map((d) => ({ ...d, paymentId: d.paymentId || d.id })),
-        i = new Map();
-      return (
-        [...t, ...r].forEach((d) => {
-          const b = d.paymentId || d.id;
-          b && i.set(b, d);
-        }),
-        Array.from(i.values())
-      );
-    },
-    Ye = (e) =>
-      (e.measurements || []).reduce(
-        (a, t) => a + Number(t.totalAmount || 0),
-        0,
-      ),
-    Ce = (e, a = []) => {
-      const t = Ye(e),
-        r = $e(e, a).reduce((l, c) => l + Number(c.amount || 0), 0),
-        i = Math.min(t, Math.max(0, Number(e.waivedAmount || 0))),
-        d = e.status === "\u0645\u0643\u062A\u0645\u0644",
-        b = (e.measurements || []).length > 0,
-        v = Math.round((t - i - r) * 1e3) / 1e3,
-        o = Math.max(0, -v);
-      return {
-        cost: t,
-        paid: r,
-        waived: i,
-        completed: d,
-        hasMeasure: b,
-        remaining: Math.max(0, v),
-        surplus: d ? o : 0,
-        advance: d ? 0 : o,
-        settled: d && b && v <= 0,
-      };
-    },
-    jt = (e = []) => {
-      const a = new Map();
-      return (
-        e.forEach((t) => {
-          const r = (t.projectId && t.paymentId) || t.id;
-          r && a.set(r, t);
-        }),
-        Array.from(a.values())
-      );
-    },
-    gt = (e = [], a = []) => {
-      const t = new Map();
-      return (
-        jt(a.filter((r) => !r.projectId)).forEach((r) => t.set(r.id, r)),
-        e.forEach((r) => {
-          $e(r, a).forEach((i) => {
-            const d = i.paymentId || i.id;
-            d &&
-              t.set(d, {
-                ...i,
-                customerName: i.customerName || r.customerName,
-                projectId: r.id,
-              });
-          });
-        }),
-        Array.from(t.values())
-      );
-    },
-    Ie = (e = [], a = []) => gt(e, a).filter((t) => t.includeInIncome !== !1),
-    He = (e = [], a = [], t) => {
-      const r = (e || [])
-          .filter((d) => re(d.date) === t && !d.debtTransactionId)
-          .reduce((d, b) => d + Number(b.amount || 0), 0),
-        i = (a || [])
-          .flatMap((d) => d.transactions || [])
-          .filter((d) => d.supplierPayment && re(d.date) === t)
-          .reduce((d, b) => d + Math.max(0, Number(b.amount || 0)), 0);
-      return r + i;
-    },
+  const $e = FD.projects.projectPayments,
+    Ye = FD.projects.projectCost,
+    Ce = FD.projects.projectSummary,
+    jt = FD.projects.dedupeIncome,
+    gt = FD.projects.allProjectIncome,
+    Ie = FD.projects.countedIncome,
+    He = FD.suppliers.paidInvoicesForMonth,
     $t = (e, a) => {
       const t = e.transactions || [],
         r = t.some((i) => i.id === a.id);
@@ -728,85 +613,9 @@
           : [a, ...t],
       };
     },
-    zt = (e, a = []) =>
-      a
-        .filter((t) => t.supplierId === e && t.debtTransactionId && H(t.amount))
-        .sort(
-          (t, r) =>
-            (t.date || "").localeCompare(r.date || "") ||
-            String(t.id).localeCompare(String(r.id)),
-        ),
-    Se = (e, a = []) => {
-      const t = zt(e.id, a),
-        r = e.transactions || [],
-        i = new Map();
-      r.filter(
-        (x) => x.supplierPayment && Array.isArray(x.allocations),
-      ).forEach((x) => {
-        x.allocations.forEach((h) => {
-          const $ = Math.max(0, Number(h.amount || 0));
-          !$ ||
-            !t.some((B) => B.id === h.invoiceId) ||
-            i.set(h.invoiceId, (i.get(h.invoiceId) || 0) + $);
-        });
-      });
-      const d = t.map((x) => ({
-          invoice: x,
-          paid: Math.min(Number(x.amount || 0), i.get(x.id) || 0),
-          remaining: Math.max(
-            0,
-            Number(x.amount || 0) -
-              Math.min(Number(x.amount || 0), i.get(x.id) || 0),
-          ),
-        })),
-        b = r
-          .filter((x) => x.supplierPayment)
-          .reduce((x, h) => x + Math.max(0, Number(h.amount || 0)), 0),
-        v = d.reduce((x, h) => x + h.paid, 0);
-      let o =
-        r
-          .filter((x) => x.type === "credit" && !x.supplierPayment)
-          .reduce((x, h) => x + Math.max(0, Number(h.amount || 0)), 0) +
-        Math.max(0, b - v);
-      d.forEach((x) => {
-        const h = Math.min(x.remaining, o);
-        ((x.paid += h), (x.remaining -= h), (o -= h));
-      });
-      const l = d.reduce((x, h) => x + Number(h.remaining || 0), 0),
-        c = d.reduce((x, h) => x + Number(h.paid || 0), 0),
-        p = new Set(t.map((x) => x.debtTransactionId)),
-        m = r
-          .filter(
-            (x) => !p.has(x.id) && !x.supplierPayment && x.type === "debit",
-          )
-          .reduce((x, h) => x + Math.max(0, Number(h.amount || 0)), 0),
-        u = o,
-        w = l + m - u;
-      return {
-        rows: d,
-        invoiceDebt: l,
-        invoicePaid: c,
-        manualBalance: m,
-        paymentExcess: u,
-        owed: Math.max(0, w),
-        credit: Math.max(0, -w),
-        totalInvoices: t.reduce((x, h) => x + Number(h.amount || 0), 0),
-      };
-    },
-    At = (e, a, t) => {
-      const r = Se(e, a);
-      let i = Number(t || 0);
-      return r.rows
-        .filter((d) => d.remaining > 0)
-        .map((d) => {
-          const b = Math.min(d.remaining, i);
-          return (
-            (i -= b),
-            b > 0 ? { invoiceId: d.invoice.id, amount: b } : null
-          );
-        })
-        .filter(Boolean);
-    },
+    zt = FD.suppliers.debtInvoices,
+    Se = FD.suppliers.supplierStatement,
+    At = FD.suppliers.allocatePayment,
     bt = [
       "\u062A\u0643\u0633",
       "\u0633\u064A\u0644\u064A\u0643\u0627\u062A",
@@ -1119,19 +928,48 @@
     );
   }
   function submitOnEnter(e, a) {
-    if (e.key !== "Enter" || e.shiftKey || e.target.tagName === "TEXTAREA") return;
+    if (e.key !== "Enter" || e.shiftKey || (e.nativeEvent && e.nativeEvent.isComposing)) return;
+    const tag = e.target.tagName;
+    if (tag === "TEXTAREA" || tag === "BUTTON" || tag === "A" || (e.target.closest && e.target.closest("[data-no-enter]"))) return;
+    const buttons = Array.from(e.currentTarget.querySelectorAll("button"));
+    const save = buttons.find((r) => r.textContent.trim().startsWith("حفظ")) || buttons.find((r) => r.textContent.includes(a));
+    if (!save) return;
     e.preventDefault();
-    const t = Array.from(e.currentTarget.querySelectorAll("button")).find((r) => r.textContent.includes(a));
-    t && t.click();
+    if (!save.disabled) save.click();
   }
-  function ce({ title: e, onClose: a, children: t, wide: r }) {
-    be(() => {
-      const i = document.body.style.overflow;
-      const d = (b) => b.key === "Escape" && a();
+  const __modalStack = [];
+  let __scrollLocks = 0,
+    __prevOverflow = "";
+  const __lockScroll = () => {
+    if (__scrollLocks++ === 0) {
+      __prevOverflow = document.body.style.overflow;
       document.body.style.overflow = "hidden";
-      window.addEventListener("keydown", d);
-      return () => { document.body.style.overflow = i; window.removeEventListener("keydown", d); };
-    }, [a]);
+    }
+  };
+  const __unlockScroll = () => {
+    if (--__scrollLocks <= 0) {
+      __scrollLocks = 0;
+      document.body.style.overflow = __prevOverflow;
+    }
+  };
+  function ce({ title: e, onClose: a, children: t, wide: r }) {
+    const __closeRef = ye(a);
+    __closeRef.current = a;
+    be(() => {
+      const token = {};
+      __modalStack.push(token);
+      __lockScroll();
+      const onKey = (b) => {
+        if (b.key === "Escape" && __modalStack[__modalStack.length - 1] === token) __closeRef.current();
+      };
+      window.addEventListener("keydown", onKey);
+      return () => {
+        window.removeEventListener("keydown", onKey);
+        const at = __modalStack.indexOf(token);
+        if (at >= 0) __modalStack.splice(at, 1);
+        __unlockScroll();
+      };
+    }, []);
     return React.createElement(
       "div",
       {
@@ -1175,7 +1013,7 @@
         ),
         React.createElement(
           "div",
-          { className: "overflow-y-auto px-5 py-4" },
+          { className: "overflow-y-auto px-5 py-4", style: { overscrollBehavior: "contain" } },
           t,
         ),
       ),
@@ -1252,6 +1090,36 @@
         ),
       ),
     );
+  }
+  function __loadXlsx() {
+    if (window.XLSX) return Promise.resolve(window.XLSX);
+    if (!window.__factoryXlsxPromise) {
+      window.__factoryXlsxPromise = new Promise((res, rej) => {
+        const c = document.createElement("script");
+        c.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
+        c.onload = () => res(window.XLSX);
+        c.onerror = () => {
+          window.__factoryXlsxPromise = null;
+          rej(new Error("XLSX CDN unavailable"));
+        };
+        document.head.appendChild(c);
+      });
+    }
+    return window.__factoryXlsxPromise;
+  }
+  /* يحفظ السجلات ثم يحذف المحذوفة فعليًا من الجدول (بدون علامة __deleted وبدون أي تغيير في SQL). */
+  async function __applyRecords(client, org, rows, dels) {
+    if (rows.length) {
+      const r = await client.from("app_records").upsert(rows, { onConflict: "organization_id,collection,id" });
+      if (r.error) return { error: r.error };
+    }
+    if (dels.length) {
+      const q = (v) => `"${String(v).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+      const or = dels.map(({ collection: c, id: i }) => `and(collection.eq.${q(c)},id.eq.${q(i)})`).join(",");
+      const r = await client.from("app_records").delete().eq("organization_id", org).or(or);
+      if (r.error) return { error: r.error };
+    }
+    return { error: null };
   }
   async function Lt(e, a) {
     const r = [];
@@ -1421,17 +1289,16 @@
         return I.length
           ? B(async () => {
               if (de && e) {
-                const M = I.map(({ collection: g, record: A }) => ({
+                const M = I.filter(({ record: A }) => !A.__deleted).map(({ collection: g, record: A }) => ({
                   organization_id: e,
                   collection: g,
                   id: A.id,
                   payload: A,
                 }));
+                const __dels = I.filter(({ record: A }) => A.__deleted).map(({ collection: g, record: A }) => ({ collection: g, id: A.id }));
                 let s;
                 try {
-                  ({ error: s } = await de.from("app_records").upsert(M, {
-                    onConflict: "organization_id,collection,id",
-                  }));
+                  ({ error: s } = await __applyRecords(de, e, M, __dels));
                 } catch (g) {
                   if ((m(g.message || String(g)), k.throwOnError)) throw g;
                   return !1;
@@ -1561,22 +1428,8 @@
   async function tt(e, a) {
     let t;
     try {
-      if (
-        (window.XLSX ||
-          (window.__factoryXlsxPromise ||
-            (window.__factoryXlsxPromise = new Promise((o, l) => {
-              const c = document.createElement("script");
-              ((c.src =
-                "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"),
-                (c.onload = () => o(window.XLSX)),
-                (c.onerror = () => l(new Error("XLSX CDN unavailable"))),
-                document.head.appendChild(c));
-            })),
-          await window.__factoryXlsxPromise),
-        (t = window.XLSX),
-        !t)
-      )
-        throw new Error("XLSX unavailable");
+      t = await __loadXlsx();
+      if (!t) throw new Error("XLSX unavailable");
     } catch (o) {
       G(
         "\u062A\u0639\u0630\u0631 \u062A\u062D\u0645\u064A\u0644 \u0645\u0643\u062A\u0628\u0629 \u0627\u0644\u062A\u0635\u062F\u064A\u0631\u060C \u062A\u062D\u0642\u0642 \u0645\u0646 \u0627\u0644\u0627\u062A\u0635\u0627\u0644 \u062B\u0645 \u062D\u0627\u0648\u0644 \u0645\u062C\u062F\u062F\u064B\u0627.",
@@ -1595,6 +1448,7 @@
             o.dateCreated,
           "\u062A\u0627\u0631\u064A\u062E \u0627\u0644\u0625\u0643\u0645\u0627\u0644":
             o.completedAt || "",
+          "رقم الفاتورة": FD.invoiceNumber.formatInvoiceNumber(o.invoiceSerial),
           الإجمالي: Ye(o),
           ملاحظات: o.notes,
         })),
@@ -1821,6 +1675,8 @@
             return `\u0645\u0639\u0627\u0645\u0644\u0629 \u063A\u064A\u0631 \u0635\u0627\u0644\u062D\u0629 \u0641\u064A \u0627\u0644\u0633\u062C\u0644 ${d.id}.`;
       }
     }
+    const __dup = FD.invoiceNumber.findDuplicateSerials(e.collections.projects || []);
+    if (__dup.length) return "أرقام فواتير مكررة بين مشاريع في النسخة: " + __dup.join("، ");
     return "";
   }
   async function _t(e, a, t) {
@@ -1831,7 +1687,7 @@
       const v = new Set((a[b] || []).map((o) => o.id));
       for (const o of e.collections[b])
         (v.has(o.id) ? (i += 1) : (r += 1),
-          d.push({ collection: b, record: o }));
+          d.push({ collection: b, record: b === "projects" && !o.invoiceSerial && (a.projects || []).some((__p) => __p.id === o.id && __p.invoiceSerial) ? { ...o, invoiceSerial: (a.projects || []).find((__p) => __p.id === o.id).invoiceSerial } : o }));
     }
     return (await t(d, { throwOnError: !0 }), { added: r, updated: i });
   }
@@ -2091,6 +1947,13 @@
         localStorage.setItem("factory_theme", A);
       } catch (z) {}
     }, [A]);
+    const __serialsDone = ye(!1);
+    be(() => {
+      if (!i || !(d || b) || m || __serialsDone.current) return;
+      __serialsDone.current = !0;
+      const missing = FD.invoiceNumber.assignMissingSerials(x);
+      if (missing.length) l({ upserts: missing.map((p) => ({ collection: "projects", record: p })) });
+    }, [i, d, b, m, x]);
     const ee = ke(
         () =>
           S.filter((z) => Number(z.quantity) <= Number(z.minThreshold || 0)),
@@ -2277,6 +2140,7 @@
                   src: "Earthlog.jpeg",
                   alt: "\u0634\u0639\u0627\u0631 \u0627\u0644\u0634\u0631\u0643\u0629",
                   className: "w-9 h-9 rounded-xl object-cover shrink-0",
+                  onError: (ev) => { ev.currentTarget.style.display = "none"; },
                 }),
                 React.createElement(
                   "div",
@@ -2603,6 +2467,7 @@
                   src: "Earthlog.jpeg",
                   alt: "\u0634\u0639\u0627\u0631 \u0627\u0644\u0634\u0631\u0643\u0629",
                   className: "w-9 h-9 rounded-xl object-cover shrink-0",
+                  onError: (ev) => { ev.currentTarget.style.display = "none"; },
                 }),
                 React.createElement(
                   "div",
@@ -2810,7 +2675,8 @@
             I &&
               React.createElement(qt, {
                 onClose: () => M(!1),
-                onCreate: async (z) => {
+                onCreate: async (__z0) => {
+                  const z = { ...__z0, invoiceSerial: FD.invoiceNumber.nextInvoiceSerial(x) };
                   const J = (z.payments || []).map((le) => ({
                     collection: "income",
                     record: {
@@ -3360,6 +3226,7 @@
       "div",
       { className: "relative" },
       React.createElement(E, {
+          "data-no-enter": "1",
         value: l ? v : p ? r(p) : "",
         placeholder: d,
         onFocus: () => {
@@ -3779,7 +3646,7 @@
           ? "\u062E\u0627\u0644\u0635 \u2014 \u0631\u0635\u064A\u062F \u0644\u0644\u0632\u0628\u0648\u0646"
           : "\u063A\u064A\u0631 \u062E\u0627\u0644\u0635",
       v = St(r),
-      o = `${String(e.id || "000001").toUpperCase()}-0000550`,
+      o = FD.invoiceNumber.formatInvoiceNumber(e.invoiceSerial) || "—",
       l = (e.measurements || []).flatMap((h) =>
         (h.entries || []).map(($) => ({
           label:
@@ -3866,7 +3733,7 @@
     .footer{position:absolute;bottom:0;right:0;left:0;padding:8px 14mm;background:var(--brand-dark);color:#fff;text-align:center;font-size:11px;font-weight:700;letter-spacing:.1px}
     @media print{body{background:#fff}.page{margin:0;box-shadow:none}}
   </style></head><body><main class="page"><div class="topline"></div><div class="shape"></div><div class="shape2"></div><div class="content">
-    <header class="header"><div><div class="identity"><img class="logo" src="${p}" alt="\u0634\u0639\u0627\u0631 \u0627\u0644\u0634\u0631\u0643\u0629" /><div><div class="company">${Pe}</div><div class="address">\u0644\u064A\u0628\u064A\u0627 - \u0637\u0631\u0627\u0628\u0644\u0633 - \u0639\u064A\u0646 \u0632\u0627\u0631\u0629 - \u0628\u062C\u0627\u0646\u0628 \u0634\u064A\u0644 \u0627\u0644\u0628\u0631\u0642\u0627\u0646</div></div></div><div class="managers"><span class="manager"><b>\u0639\u0628\u062F\u0648</b>0913551514</span><span class="manager"><b>\u0645\u062D\u0645\u062F</b>0925881514</span><span class="manager"><b>\u0645\u062D\u0645\u062F</b>0935001514</span></div></div><div class="meta"><div class="meta-card"><span class="meta-label">\u0627\u0644\u062A\u0627\u0631\u064A\u062E</span><span class="meta-value">${Z()}</span></div><div class="meta-card"><span class="meta-label">\u0631\u0642\u0645 \u0627\u0644\u0641\u0627\u062A\u0648\u0631\u0629</span><span class="meta-value">${o}</span></div><div class="meta-card wide"><span class="meta-label">\u062A\u0627\u0631\u064A\u062E \u0625\u0646\u0634\u0627\u0621 \u0627\u0644\u0645\u0634\u0631\u0648\u0639</span><span class="meta-value">${Y(e.dateCreated || "\u063A\u064A\u0631 \u0645\u062D\u062F\u062F")}</span></div></div></header>
+    <header class="header"><div><div class="identity"><img class="logo" onerror="this.style.display='none'" src="${p}" alt="\u0634\u0639\u0627\u0631 \u0627\u0644\u0634\u0631\u0643\u0629" /><div><div class="company">${Pe}</div><div class="address">\u0644\u064A\u0628\u064A\u0627 - \u0637\u0631\u0627\u0628\u0644\u0633 - \u0639\u064A\u0646 \u0632\u0627\u0631\u0629 - \u0628\u062C\u0627\u0646\u0628 \u0634\u064A\u0644 \u0627\u0644\u0628\u0631\u0642\u0627\u0646</div></div></div><div class="managers"><span class="manager"><b>\u0639\u0628\u062F\u0648</b>0913551514</span><span class="manager"><b>\u0645\u062D\u0645\u062F</b>0925881514</span><span class="manager"><b>\u0645\u062D\u0645\u062F</b>0935001514</span></div></div><div class="meta"><div class="meta-card"><span class="meta-label">\u0627\u0644\u062A\u0627\u0631\u064A\u062E</span><span class="meta-value">${Z()}</span></div><div class="meta-card"><span class="meta-label">\u0631\u0642\u0645 \u0627\u0644\u0641\u0627\u062A\u0648\u0631\u0629</span><span class="meta-value">${o}</span></div><div class="meta-card wide"><span class="meta-label">\u062A\u0627\u0631\u064A\u062E \u0625\u0646\u0634\u0627\u0621 \u0627\u0644\u0645\u0634\u0631\u0648\u0639</span><span class="meta-value">${Y(e.dateCreated || "\u063A\u064A\u0631 \u0645\u062D\u062F\u062F")}</span></div></div></header>
     <section class="customer-grid"><div class="customer-card"><div class="label">\u0627\u0633\u0645 \u0627\u0644\u0632\u0628\u0648\u0646</div><div class="value">${Y(e.customerName || "\u063A\u064A\u0631 \u0645\u062D\u062F\u062F")}</div></div><div class="customer-card"><div class="label">\u0645\u0648\u0642\u0639 \u0627\u0644\u0645\u0634\u0631\u0648\u0639</div><div class="value">${Y(e.location || "\u063A\u064A\u0631 \u0645\u062D\u062F\u062F")}</div></div></section>
     <table><thead><tr><th>#</th><th>\u0627\u0644\u0628\u0646\u062F / \u0627\u0644\u0642\u064A\u0627\u0633 \u0627\u0644\u0646\u0647\u0627\u0626\u064A</th><th>\u0627\u0644\u0643\u0645\u064A\u0629</th><th>\u0633\u0639\u0631 \u0627\u0644\u0648\u062D\u062F\u0629</th><th>\u0627\u0644\u0625\u062C\u0645\u0627\u0644\u064A</th></tr></thead><tbody>${c}</tbody></table>
     <section class="summary"><div class="words-card"><div class="section-label">\u0635\u0627\u0641\u064A \u0627\u0644\u0641\u0627\u062A\u0648\u0631\u0629 \u0628\u0627\u0644\u062D\u0631\u0648\u0641</div><div class="words">${Y(v)} \u0644\u064A\u0628\u064A \u0641\u0642\u0637 \u0644\u0627 \u063A\u064A\u0631</div><div class="status">\u0627\u0644\u062D\u0627\u0644\u0629: ${b}</div></div><div class="total-card"><div class="total-row"><span>\u0627\u0644\u0625\u062C\u0645\u0627\u0644\u064A \u0642\u0628\u0644 \u0627\u0644\u062E\u0635\u0645</span><strong>${N(t.cost)}</strong></div>${t.waived > 0 ? `<div class="total-row discount"><span>\u0627\u0644\u062E\u0635\u0645</span><strong>\u2212${N(t.waived)}</strong></div>` : ""}<div class="total-row main"><span>\u0635\u0627\u0641\u064A \u0627\u0644\u0641\u0627\u062A\u0648\u0631\u0629</span><strong>${N(r)}</strong></div><div class="total-row"><span>\u0627\u0644\u0645\u062F\u0641\u0648\u0639</span><strong>${N(t.paid)}</strong></div><div class="total-row balance"><span>${t.surplus > 0 ? "\u0631\u0635\u064A\u062F \u0644\u0644\u0632\u0628\u0648\u0646" : "\u0627\u0644\u0628\u0627\u0642\u064A"}</span><strong>${t.surplus > 0 ? N(t.surplus) : N(i)}</strong></div></div></section>
@@ -4121,7 +3988,7 @@
     .footer{margin-top:14px;padding:7px;background:var(--brand-dark);color:#fff;text-align:center;font-size:10.5px;font-weight:700;border-radius:8px}
     @media print{body{background:#fff}.page{margin:0;width:auto;padding:0}.topline{margin:0 0 6mm}}
   </style></head><body><main class="page"><div class="topline"></div>
-    <header class="header"><div class="identity"><img class="logo" src="${h}" alt="" /><div><div class="company">${Pe}</div><div class="address">\u0644\u064A\u0628\u064A\u0627 - \u0637\u0631\u0627\u0628\u0644\u0633 - \u0639\u064A\u0646 \u0632\u0627\u0631\u0629 - \u0628\u062C\u0627\u0646\u0628 \u0634\u064A\u0644 \u0627\u0644\u0628\u0631\u0642\u0627\u0646</div></div></div><div class="meta">\u062A\u0627\u0631\u064A\u062E \u0627\u0644\u0643\u0634\u0641<br><b>${Z()}</b></div></header>
+    <header class="header"><div class="identity"><img class="logo" onerror="this.style.display='none'" src="${h}" alt="" /><div><div class="company">${Pe}</div><div class="address">\u0644\u064A\u0628\u064A\u0627 - \u0637\u0631\u0627\u0628\u0644\u0633 - \u0639\u064A\u0646 \u0632\u0627\u0631\u0629 - \u0628\u062C\u0627\u0646\u0628 \u0634\u064A\u0644 \u0627\u0644\u0628\u0631\u0642\u0627\u0646</div></div></div><div class="meta">\u062A\u0627\u0631\u064A\u062E \u0627\u0644\u0643\u0634\u0641<br><b>${Z()}</b></div></header>
     <div class="title-row"><h1 class="title">${d ? "\u0643\u0634\u0641 \u062D\u0633\u0627\u0628 \u0645\u0648\u0631\u0651\u062F" : "\u0643\u0634\u0641 \u062D\u0633\u0627\u0628 \u0632\u0628\u0648\u0646"}</h1><span class="badge">${m}: ${N(u)} \u062F\u064A\u0646\u0627\u0631</span></div>
     <div class="party"><div><span>${d ? "\u0627\u0633\u0645 \u0627\u0644\u0645\u0648\u0631\u0651\u062F" : "\u0627\u0633\u0645 \u0627\u0644\u0632\u0628\u0648\u0646"}</span><strong>${Y(a.name || "")}</strong></div>${a.phone ? `<div><span>\u0627\u0644\u0647\u0627\u062A\u0641</span><strong>${Y(a.phone)}</strong></div>` : ""}</div>
     ${p}
@@ -4182,7 +4049,7 @@
     .header{display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid #dce6e7;padding-bottom:10px}.identity{display:flex;align-items:center;gap:12px}.logo{width:54px;height:54px;border-radius:12px;object-fit:cover}.company{font-size:19px;font-weight:800;color:#0b3e42}.subtitle,.meta,.period{font-size:11px;color:#64727d}.title{font-size:20px;font-weight:800;color:#0b3e42;margin:16px 0 4px}
     .summary{border:1px solid #dce6e7;border-radius:12px;overflow:hidden;margin-bottom:16px}.summary-row{display:flex;justify-content:space-between;padding:8px 12px;border-bottom:1px solid #dce6e7}.summary-row:last-child{border-bottom:0}.summary-row.main{background:#125b5f;color:#fff;font-size:14px}.summary-row.debt{background:#fff5f1;color:#a04336}
     .section-title{font-size:14px;font-weight:800;color:#0b3e42;margin:14px 0 6px}table{width:100%;border-collapse:collapse;border:1px solid #dce6e7}th{background:#0b3e42;color:#fff;padding:7px 5px}td{padding:6px 5px;border-top:1px solid #dce6e7;text-align:center}td.name{text-align:right}tbody tr:nth-child(even) td{background:#f8fbfa}.footer{margin-top:22px;text-align:center;color:#64727d;font-size:10px}@media print{body{background:#fff}.page{width:auto;margin:0;padding:0}.topline{margin:0 0 6mm}}
-  </style></head><body><main class="page"><div class="topline"></div><header class="header"><div class="identity"><img class="logo" src="${S}" alt="\u0627\u0644\u0634\u0639\u0627\u0631"/><div><div class="company">${Pe}</div></div></div><div class="meta">\u062A\u0627\u0631\u064A\u062E \u0627\u0644\u0637\u0628\u0627\u0639\u0629<br/><strong>${ut(Le())}</strong></div></header>
+  </style></head><body><main class="page"><div class="topline"></div><header class="header"><div class="identity"><img class="logo" onerror="this.style.display='none'" src="${S}" alt="\u0627\u0644\u0634\u0639\u0627\u0631"/><div><div class="company">${Pe}</div></div></div><div class="meta">\u062A\u0627\u0631\u064A\u062E \u0627\u0644\u0637\u0628\u0627\u0639\u0629<br/><strong>${ut(Le())}</strong></div></header>
     <h1 class="title">\u0627\u0644\u062A\u0642\u0631\u064A\u0631 \u0627\u0644\u0645\u0627\u0644\u064A \u0627\u0644\u0634\u0647\u0631\u064A</h1><div class="period">\u0639\u0646 \u0634\u0647\u0631 ${Y(B)}</div><section class="summary">${f("\u0625\u062C\u0645\u0627\u0644\u064A \u0627\u0644\u0648\u0627\u0631\u062F\u0627\u062A", p)}${f("\u0625\u062C\u0645\u0627\u0644\u064A \u0627\u0644\u0645\u0635\u0627\u0631\u064A\u0641", m)}${f("\u0625\u062C\u0645\u0627\u0644\u064A \u0627\u0644\u0641\u0648\u0627\u062A\u064A\u0631", u)}${f("\u0627\u0644\u0641\u0648\u0627\u062A\u064A\u0631 \u0627\u0644\u0645\u062F\u0641\u0648\u0639\u0629 \u0641\u0639\u0644\u064A\u064B\u0627", w)}${f("\u0627\u0644\u0635\u0627\u0641\u064A \u0627\u0644\u0646\u0642\u062F\u064A", x, "main")}${f("\u0625\u062C\u0645\u0627\u0644\u064A \u0645\u0633\u062A\u062D\u0642\u0627\u062A\u0646\u0627 \u0639\u0644\u0649 \u0627\u0644\u0639\u0645\u0644\u0627\u0621", h, "debt")}${f("\u0625\u062C\u0645\u0627\u0644\u064A \u0645\u0633\u062A\u062D\u0642\u0627\u062A \u0627\u0644\u0645\u0648\u0631\u062F\u064A\u0646", $, "debt")}</section>
     <div class="section-title">\u0645\u0644\u062E\u0635 \u0627\u0644\u0634\u0647\u0631</div><table><thead><tr><th>\u0627\u0644\u0646\u0648\u0639</th><th>\u0639\u062F\u062F \u0627\u0644\u0639\u0645\u0644\u064A\u0627\u062A</th><th>\u0627\u0644\u0625\u062C\u0645\u0627\u0644\u064A</th></tr></thead><tbody><tr><td class="name">\u0627\u0644\u0648\u0627\u0631\u062F\u0627\u062A</td><td>${o.length}</td><td>${N(p)}</td></tr><tr><td class="name">\u0627\u0644\u0645\u0635\u0627\u0631\u064A\u0641</td><td>${l.length}</td><td>${N(m)}</td></tr><tr><td class="name">\u0627\u0644\u0641\u0648\u0627\u062A\u064A\u0631</td><td>${c.length}</td><td>${N(u)}</td></tr></tbody></table><div class="footer">\u062A\u0645 \u0625\u0646\u0634\u0627\u0621 \u0647\u0630\u0627 \u0627\u0644\u062A\u0642\u0631\u064A\u0631 \u0622\u0644\u064A\u064B\u0627 \u0645\u0646 \u0646\u0638\u0627\u0645 \u0627\u0644\u062D\u0633\u0627\u0628\u0627\u062A.</div></main></body></html>`;
     (T.document.write(O), T.document.close());
@@ -4748,7 +4615,9 @@
           ),
           React.createElement(
             "div",
-            { className: "flex gap-2" },
+            { className: "flex gap-2 items-center flex-wrap" },
+            FD.invoiceNumber.formatInvoiceNumber(p.invoiceSerial) &&
+              React.createElement("span", { className: "text-xs", style: { color: "var(--text-muted)" } }, "رقم الفاتورة: " + FD.invoiceNumber.formatInvoiceNumber(p.invoiceSerial)),
             React.createElement(
               he,
               { onClick: () => Ot(p, o) },
@@ -7390,6 +7259,8 @@
           income: c,
           onOpenProject: p,
           existing: i.filter((C) => C.id !== S.id),
+          onAddIncome: (rec) => b("income", rec),
+          onDeleteIncome: (id) => o("income", id),
         }),
     );
   }
@@ -7476,6 +7347,8 @@
     income: l = [],
     onOpenProject: c,
     existing: p = [],
+    onAddIncome: __addIncome,
+    onDeleteIncome: __delIncome,
   }) {
     const [m, u] = y(e),
       [w, x] = y(!1),
@@ -7488,6 +7361,10 @@
       [n, k] = y(""),
       j = ye(null),
       I = ye(null);
+    const [__gpAmt, __setGpAmt] = y(""),
+      [__gpDate, __setGpDate] = y(Le()),
+      [__gpNote, __setGpNote] = y(""),
+      [__gpDel, __setGpDel] = y(null);
     be(() => u(e), [e.id]);
     const M = () => {
         (j.current && clearTimeout(j.current),
@@ -7592,6 +7469,27 @@
             "success",
           ));
       };
+    const __saveGeneralPayment = () => {
+      if (!H(__gpAmt)) {
+        G("أدخل مبلغ سداد موجبًا.");
+        return;
+      }
+      __addIncome({
+        id: ne(),
+        projectId: null,
+        customerId: m.id,
+        customerName: m.name,
+        paymentScope: "customer",
+        amount: Number(__gpAmt),
+        date: Be(__gpDate),
+        includeInIncome: !0,
+        description: __gpNote.trim() || "سداد عام من العميل",
+      });
+      __setGpAmt("");
+      __setGpNote("");
+      __setGpDate(Le());
+      G("تم تسجيل السداد العام وإضافته إلى الواردات.", "success");
+    };
     return React.createElement(
       ce,
       { title: m.name, onClose: A, wide: !0 },
@@ -8021,6 +7919,30 @@
                 "\u0632\u064A\u0627\u062F\u0629 \u0645\u062F\u0641\u0648\u0639\u0629 \u0641\u064A \u0645\u0634\u0627\u0631\u064A\u0639 \u0645\u0643\u062A\u0645\u0644\u0629 (\u0631\u0635\u064A\u062F \u0644\u0644\u0639\u0645\u064A\u0644): ",
                 N(V.surplus),
               ),
+            o != null &&
+              React.createElement(
+                "div",
+                {
+                  className: "rounded-lg border p-3 flex flex-col gap-2",
+                  style: { borderColor: "var(--card-border)" },
+                  onKeyDown: (ev) => {
+                    if (ev.key === "Enter" && ev.target.tagName === "INPUT") {
+                      ev.preventDefault();
+                      __saveGeneralPayment();
+                    }
+                  },
+                },
+                React.createElement("div", { className: "text-sm font-medium", style: { color: "var(--text-body)" } }, "تسجيل سداد عام من العميل"),
+                React.createElement(
+                  "div",
+                  { className: "grid grid-cols-2 gap-2" },
+                  React.createElement(E, { type: "number", placeholder: "المبلغ المستلم", value: __gpAmt, onChange: (ev) => __setGpAmt(ev.target.value) }),
+                  React.createElement(E, { type: "datetime-local", value: __gpDate, onChange: (ev) => __setGpDate(ev.target.value) }),
+                ),
+                React.createElement(E, { placeholder: "ملاحظة (اختياري)", value: __gpNote, onChange: (ev) => __setGpNote(ev.target.value) }),
+                React.createElement("div", { className: "text-xs", style: { color: "var(--text-muted)" } }, "يُسجَّل كوارد غير مرتبط بمشروع، ويظهر في «المصاريف والواردات» والتقارير، ويُخصم من مستحقات العميل."),
+                React.createElement(K, { onClick: __saveGeneralPayment, full: !0, disabled: !__gpAmt }, React.createElement(D, { name: "plus", size: 16 }), " تسجيل السداد العام"),
+              ),
             ze.length > 0 &&
               React.createElement(
                 "div",
@@ -8051,7 +7973,14 @@
                       _.date,
                       _.description ? " \xB7 " + _.description : "",
                     ),
-                    React.createElement("span", null, N(_.amount)),
+                    React.createElement(
+                      "span",
+                      { className: "flex items-center gap-2" },
+                      N(_.amount),
+                      __gpDel === _.id
+                        ? React.createElement(ge, { onConfirm: () => (__delIncome(_.id), __setGpDel(null)), onCancel: () => __setGpDel(null) })
+                        : React.createElement("button", { onClick: () => __setGpDel(_.id), style: { color: "var(--text-muted)" } }, React.createElement(D, { name: "trash", size: 12 })),
+                    ),
                   ),
                 ),
               ),
@@ -8690,10 +8619,10 @@
             K,
             {
               onClick: async () => {
-                if (!window.XLSX) {
-                  G(
-                    "\u0645\u064A\u0632\u0629 \u0627\u0644\u062A\u0635\u062F\u064A\u0631 \u063A\u064A\u0631 \u0645\u062A\u0627\u062D\u0629 \u0647\u0646\u0627 \u062D\u0627\u0644\u064A\u064B\u0627.",
-                  );
+                try {
+                  await __loadXlsx();
+                } catch (__e) {
+                  G("تعذر تحميل مكتبة التصدير، تحقق من الاتصال ثم حاول مجددًا.");
                   return;
                 }
                 const s = XLSX.utils.book_new();
@@ -8904,7 +8833,7 @@
           ),
           React.createElement(
             he,
-            { onClick: () => annualReportPrint({ year: e.slice(0, 4), invoices: r, expenses: i, income: d, suppliers: l }) },
+            { onClick: () => annualReportPrint({ year: e.slice(0, 4), invoices: r, expenses: i, income: m, suppliers: l }) },
             React.createElement(D, { name: "calendar", size: 16 }),
             " طباعة السنة كاملة",
           ),
@@ -9930,6 +9859,23 @@
   }
   function la() {
     const e = Ft();
+    if (__cfgOk && !_e)
+      return React.createElement(
+        React.Fragment,
+        null,
+        React.createElement(Ae, null),
+        React.createElement(
+          "div",
+          { dir: "rtl", className: "min-h-screen flex items-center justify-center p-4", style: { background: "var(--bg)", fontFamily: "'Cairo', sans-serif" } },
+          React.createElement(
+            "div",
+            { className: "w-full max-w-lg rounded-2xl border p-5 flex flex-col gap-3", style: { background: "var(--card-bg)", borderColor: "var(--card-border)" } },
+            React.createElement("h1", { className: "text-lg font-bold", style: { color: "var(--text-strong)" } }, "تعذر الاتصال بخدمة البيانات"),
+            React.createElement("p", { className: "text-sm", style: { color: "var(--text-body)" } }, "لم يتم تحميل مكتبة الاتصال بالسحابة (غالبًا بسبب ضعف الإنترنت). أوقفنا التطبيق عمدًا حتى لا تُحفظ بياناتك في هذا المتصفح فقط بدل الحفظ في السحابة. تحقق من الاتصال ثم أعد تحميل الصفحة."),
+            React.createElement("div", { className: "flex gap-2" }, React.createElement(K, { onClick: () => window.location.reload() }, "إعادة تحميل الصفحة")),
+          ),
+        ),
+      );
     return _e
       ? e.loading
         ? React.createElement(

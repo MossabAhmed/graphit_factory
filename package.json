@@ -1,0 +1,8 @@
+{
+  "name": "graphit-factory",
+  "private": true,
+  "description": "نظام محاسبة شركة الشرق الكبرى - موقع ثابت بلا خطوة بناء",
+  "scripts": {
+    "test": "node tests/run-all.js"
+  }
+}
