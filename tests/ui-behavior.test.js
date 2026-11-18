@@ -73,5 +73,14 @@ assert.equal(bodyBg.style.overflow, "");
 assert.ok(app.includes("nextInvoiceSerial(x)"), "مشروع جديد يأخذ رقمًا تسلسليًا");
 assert.ok(app.includes("assignMissingSerials(x)"), "المشاريع القديمة تُرقَّم مرة واحدة");
 assert.ok(app.includes('paymentScope: "customer"'), "السداد العام للعميل مسجّل بنوعه");
+assert.ok(app.includes('__uiStateKey = "factory_ui_state_v1"'), "حالة القسم لها مفتاح تخزين مستقل");
+assert.ok(app.includes("localStorage.setItem(__uiStateKey, JSON.stringify({ section: F, subSection: X }))"), "القسم الحالي محفوظ بعد التحديث");
+assert.ok(app.includes("if (oPrinted || v.closed) return;"), "التقرير السنوي لا يطبع مرتين");
+assert.ok(app.includes('name: "printer"'), "أزرار الطباعة تستخدم أيقونة طابعة");
+assert.ok(app.includes("goReports: () => U(\"reports\")"), "بطاقات لوحة التحكم تستطيع فتح التقارير");
+assert.ok(app.includes("dashboard-card") && app.includes('" interactive"'), "بطاقات لوحة التحكم تفاعلية");
+assert.ok(app.includes("app-sidebar"), "الشريط الجانبي يحمل تنسيقًا مخصصًا");
+const css = fs.readFileSync(path.join(__dirname, "..", "styles.css"), "utf8");
+assert.ok(css.includes("--sidebar-border") && css.includes(".mobile-bottom-nav"), "الشريط له تباين وحدود ثابتة");
 
 console.log("ui-behavior tests: ok");

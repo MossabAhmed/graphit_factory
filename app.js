@@ -322,6 +322,14 @@
         React.createElement("polyline", { points: "7,11 12,16 17,11" }),
         React.createElement("line", { x1: "4", y1: "21", x2: "20", y2: "21" }),
       ),
+      printer: React.createElement(
+        React.Fragment,
+        null,
+        React.createElement("path", { d: "M6 9V3h12v6" }),
+        React.createElement("path", { d: "M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" }),
+        React.createElement("rect", { x: "6", y: "14", width: "12", height: "7" }),
+        React.createElement("circle", { cx: "18", cy: "12", r: "1", fill: "currentColor", stroke: "none" }),
+      ),
       upload: React.createElement(
         React.Fragment,
         null,
@@ -686,7 +694,20 @@
       "personalLog",
     ],
     Je = "factory_app_",
-    Te = Je + "__all__";
+    Te = Je + "__all__",
+    __uiStateKey = "factory_ui_state_v1";
+  function __readUiState() {
+    try {
+      const e = JSON.parse(localStorage.getItem(__uiStateKey) || "{}");
+      const a = ["dashboard", "projects", "invoices", "finance", "accounts", "attendance", "inventory", "reports", "personal"];
+      return {
+        section: a.includes(e.section) ? e.section : "dashboard",
+        subSection: ["customers", "suppliers", "workers"].includes(e.subSection) ? e.subSection : "customers",
+      };
+    } catch (e) {
+      return { section: "dashboard", subSection: "customers" };
+    }
+  }
   function se({ children: e, bg: a, fg: t }) {
     return React.createElement(
       "span",
@@ -698,14 +719,21 @@
       e,
     );
   }
-  function te({ icon: e, label: a, value: t, sub: r, accent: i }) {
+  function te({ icon: e, label: a, value: t, sub: r, accent: i, onClick: d }) {
+    const b = d ? "button" : "div";
     return React.createElement(
-      "div",
+      b,
       {
-        className: "rounded-2xl border p-4 flex flex-col gap-3 min-w-0",
+        className: "dashboard-card rounded-2xl border p-4 flex flex-col gap-3 min-w-0" + (d ? " interactive" : ""),
+        type: d ? "button" : void 0,
+        onClick: d,
+        onKeyDown: d ? (v) => { if (v.key === "Enter" || v.key === " ") { v.preventDefault(); d(); } } : void 0,
+        tabIndex: d ? 0 : void 0,
+        "aria-label": d ? a : void 0,
         style: {
           background: "var(--card-bg)",
           borderColor: "var(--card-border)",
+          borderTop: `3px solid ${i}`,
         },
       },
       React.createElement(
@@ -904,20 +932,23 @@
       e,
     );
   }
-  function he({ children: e, onClick: a, danger: t }) {
+  function he({ children: e, onClick: a, danger: t, tone: r }) {
     return React.createElement(
       "button",
       {
         type: "button",
         onClick: a,
         className:
-          "inline-flex items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium border transition active:scale-[0.98]",
+          "inline-flex items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium border transition active:scale-[0.98]" +
+          (r ? " print-button print-button-" + r : ""),
         style: t
           ? {
               color: "var(--danger)",
               borderColor: "var(--warn-border)",
               background: "var(--warn-bg)",
             }
+          : r
+            ? void 0
           : {
               color: "var(--text-body)",
               borderColor: "var(--card-border)",
@@ -1920,8 +1951,8 @@
         attendance: C,
         personalLog: q,
       } = v,
-      [F, U] = y("dashboard"),
-      [X, n] = y("customers"),
+      [F, U] = y(() => __readUiState().section),
+      [X, n] = y(() => __readUiState().subSection),
       [k, j] = y(null),
       [I, M] = y(!1),
       [s, g] = y(!1),
@@ -1947,6 +1978,11 @@
         localStorage.setItem("factory_theme", A);
       } catch (z) {}
     }, [A]);
+    be(() => {
+      try {
+        localStorage.setItem(__uiStateKey, JSON.stringify({ section: F, subSection: X }));
+      } catch (z) {}
+    }, [F, X]);
     const __serialsDone = ye(!1);
     be(() => {
       if (!i || !(d || b) || m || __serialsDone.current) return;
@@ -2129,8 +2165,8 @@
             React.createElement(
               "aside",
               {
-                className:
-                  "w-[220px] shrink-0 hidden sm:flex sticky top-0 h-screen overflow-y-auto flex-col py-5 px-3 gap-1",
+                  className:
+                    "app-sidebar w-[220px] shrink-0 hidden sm:flex sticky top-0 h-screen overflow-y-auto flex-col py-5 px-3 gap-1",
                 style: { background: "var(--sidebar-bg)" },
               },
               React.createElement(
@@ -2555,6 +2591,7 @@
                   monthInvoices: fe,
                   onOpenProject: (z) => j(z),
                   goProjects: () => U("projects"),
+                  goReports: () => U("reports"),
                 }),
               F === "projects" &&
                 React.createElement(Bt, {
@@ -2725,6 +2762,7 @@
     monthInvoices: b,
     onOpenProject: v,
     goProjects: o,
+    goReports: w,
   }) {
     const l = e.filter(
         (u) =>
@@ -2771,6 +2809,7 @@
             "\u0645\u0634\u0627\u0631\u064A\u0639 \u062C\u0627\u0631\u064A\u0629",
           value: l.length,
           accent: "var(--success)",
+          onClick: o,
         }),
         React.createElement(te, {
           icon: "circleDot",
@@ -2778,6 +2817,7 @@
             "\u0645\u0634\u0627\u0631\u064A\u0639 \u0642\u0627\u062F\u0645\u0629",
           value: c.length,
           accent: "var(--warning)",
+          onClick: o,
         }),
         React.createElement(te, {
           icon: "alert",
@@ -2793,6 +2833,7 @@
           value: N(m),
           sub: "\u0648\u0627\u0631\u062F\u0627\u062A \u2212 \u0645\u0635\u0627\u0631\u064A\u0641 \u2212 \u0641\u0648\u0627\u062A\u064A\u0631 \u0645\u062F\u0641\u0648\u0639\u0629",
           accent: m >= 0 ? "var(--success)" : "var(--danger)",
+          onClick: w,
         }),
       ),
       React.createElement(
@@ -2803,7 +2844,8 @@
           label:
             "\u0645\u0633\u062A\u062D\u0642\u0627\u062A \u0639\u0644\u0649 \u0627\u0644\u0639\u0645\u0644\u0627\u0621",
           value: N(r),
-          accent: "var(--accent)",
+          accent: "#7c3aed",
+          onClick: w,
         }),
         React.createElement(
           "div",
@@ -4073,8 +4115,14 @@
     const v = window.open("", "_blank", "width=1200,height=900");
     if (!v) return G("يرجى السماح بالنوافذ المنبثقة لطباعة التقرير السنوي.");
     v.document.open(); v.document.write(b); v.document.close();
-    const o = () => { try { v.focus(); v.print(); } catch (l) { console.error("Annual print failed:", l); } };
-    v.onload = o; window.setTimeout(o, 700);
+    let oPrinted = !1;
+    const o = () => {
+      if (oPrinted || v.closed) return;
+      oPrinted = !0;
+      try { v.focus(); v.print(); } catch (l) { console.error("Annual print failed:", l); }
+    };
+    v.onload = o;
+    window.setTimeout(o, 700);
   }
   function Ut({ remaining: e, waived: a, onApply: t, onReset: r }) {
     const [i, d] = y(""),
@@ -4620,8 +4668,8 @@
               React.createElement("span", { className: "text-xs", style: { color: "var(--text-muted)" } }, "رقم الفاتورة: " + FD.invoiceNumber.formatInvoiceNumber(p.invoiceSerial)),
             React.createElement(
               he,
-              { onClick: () => Ot(p, o) },
-              React.createElement(D, { name: "download", size: 14 }),
+              { onClick: () => Ot(p, o), tone: "invoice" },
+              React.createElement(D, { name: "printer", size: 14 }),
               " \u0637\u0628\u0627\u0639\u0629 \u0641\u0627\u062A\u0648\u0631\u0629 \u0627\u0644\u0642\u064A\u0627\u0633",
             ),
           ),
@@ -7558,14 +7606,14 @@
                   { invoices: r, projects: o || [], income: l },
                 ),
               className:
-                "w-full rounded-lg border px-4 py-2.5 text-sm font-medium flex items-center justify-center gap-2",
+                "print-button print-button-statement w-full rounded-lg border px-4 py-2.5 text-sm font-medium flex items-center justify-center gap-2",
               style: {
-                borderColor: "var(--accent)",
-                color: "var(--accent)",
-                background: "var(--card-bg)",
+                borderColor: "#2563eb",
+                color: "#1d4ed8",
+                background: "#eff6ff",
               },
             },
-            React.createElement(D, { name: "receipt", size: 16 }),
+            React.createElement(D, { name: "printer", size: 16 }),
             " \u0643\u0634\u0641 \u062D\u0633\u0627\u0628",
           ),
         React.createElement(
@@ -8817,6 +8865,7 @@
           React.createElement(
             he,
             {
+              tone: "monthly",
               onClick: () =>
                 Xt({
                   month: e,
@@ -8828,13 +8877,13 @@
                   suppliers: l,
                 }),
             },
-            React.createElement(D, { name: "receipt", size: 16 }),
+            React.createElement(D, { name: "printer", size: 16 }),
             " \u0637\u0628\u0627\u0639\u0629 \u0627\u0644\u062A\u0642\u0631\u064A\u0631",
           ),
           React.createElement(
             he,
-            { onClick: () => annualReportPrint({ year: e.slice(0, 4), invoices: r, expenses: i, income: m, suppliers: l }) },
-            React.createElement(D, { name: "calendar", size: 16 }),
+            { tone: "annual", onClick: () => annualReportPrint({ year: e.slice(0, 4), invoices: r, expenses: i, income: m, suppliers: l }) },
+            React.createElement(D, { name: "printer", size: 16 }),
             " طباعة السنة كاملة",
           ),
         ),
