@@ -719,6 +719,48 @@
       e,
     );
   }
+  /* شارة حالة المشروع: لون مميز ونقطة لكل حالة. */
+  const __statusKey = (s) =>
+    s === "جديد"
+      ? "new"
+      : s === "قيد التنفيذ"
+        ? "progress"
+        : s === "مكتمل"
+          ? "complete"
+          : "unknown";
+  function StatusPill({ status: e }) {
+    return React.createElement(
+      "span",
+      { className: "status-pill status-" + __statusKey(e) },
+      React.createElement("span", { className: "status-dot", "aria-hidden": "true" }),
+      e || "حالة غير معروفة",
+    );
+  }
+  /* علامة المشروع المكتمل: «خالص» إن لم يبقَ عليه شيء، وإلا «غير خالص». */
+  function SettleMark({ summary: e, compact: a }) {
+    if (!e || !e.completed) return null;
+    const t = e.settled,
+      r = t
+        ? "المشروع مكتمل وخالص"
+        : e.remaining > 0
+          ? "مكتمل وباقي عليه " + N(e.remaining)
+          : "مكتمل وبانتظار الكيل";
+    return React.createElement(
+      "span",
+      {
+        className: "settle-mark " + (t ? "is-settled" : "is-unsettled") + (a ? " compact" : ""),
+        title: r,
+        "aria-label": r,
+      },
+      React.createElement(
+        "span",
+        { className: "settle-icon", "aria-hidden": "true" },
+        t ? "✓" : "✗",
+      ),
+      !a && (t ? "خالص" : "غير خالص"),
+    );
+  }
+  const __projectsFilterKey = "factory_projects_filter";
   function te({ icon: e, label: a, value: t, sub: r, accent: i, onClick: d }) {
     const b = d ? "button" : "div";
     return React.createElement(
@@ -731,9 +773,9 @@
         tabIndex: d ? 0 : void 0,
         "aria-label": d ? a : void 0,
         style: {
-          background: "var(--card-bg)",
+          background: `radial-gradient(120% 90% at 0% 0%, color-mix(in srgb, ${i} 13%, transparent), transparent 60%), var(--card-bg)`,
           borderColor: "var(--card-border)",
-          borderTop: `3px solid ${i}`,
+          "--card-accent": i,
         },
       },
       React.createElement(
@@ -748,8 +790,8 @@
           "div",
           {
             className:
-              "w-9 h-9 rounded-xl flex items-center justify-center shrink-0",
-            style: { background: i + "1f" },
+              "stat-icon w-9 h-9 rounded-xl flex items-center justify-center shrink-0",
+            style: { background: `color-mix(in srgb, ${i} 16%, transparent)` },
           },
           React.createElement(D, { name: e, size: 18, color: i }),
         ),
@@ -2589,13 +2631,16 @@
                   monthIncome: ze,
                   monthExpense: Me,
                   monthInvoices: fe,
+                  income: B,
                   onOpenProject: (z) => j(z),
                   goProjects: () => U("projects"),
                   goReports: () => U("reports"),
+                  goInventory: () => U("inventory"),
                 }),
               F === "projects" &&
                 React.createElement(Bt, {
                   projects: x,
+                  income: B,
                   onOpen: (z) => j(z),
                   onNew: () => M(!0),
                 }),
@@ -2760,78 +2805,164 @@
     monthIncome: i,
     monthExpense: d,
     monthInvoices: b,
+    income: inc = [],
     onOpenProject: v,
     goProjects: o,
     goReports: w,
+    goInventory: gi,
   }) {
-    const l = e.filter(
-        (u) =>
-          u.status ===
-          "\u0642\u064A\u062F \u0627\u0644\u062A\u0646\u0641\u064A\u0630",
-      ),
-      c = e.filter((u) => u.status === "\u062C\u062F\u064A\u062F"),
+    const S_NEW = "جديد",
+      S_PROG = "قيد التنفيذ",
+      S_DONE = "مكتمل",
+      l = e.filter((u) => u.status === S_PROG),
+      c = e.filter((u) => u.status === S_NEW),
+      summaries = ke(() => {
+        const map = new Map();
+        e.forEach((u) => map.set(u.id, FD.projects.projectSummary(u, inc)));
+        return map;
+      }, [e, inc]),
+      done = e.filter((u) => u.status === S_DONE),
+      doneSettled = done.filter((u) => (summaries.get(u.id) || {}).settled),
+      doneOpen = done.filter((u) => !(summaries.get(u.id) || {}).settled),
       p = [...a]
         .sort((u, w) => (w.date || "").localeCompare(u.date || ""))
         .slice(0, 5),
-      m = i - d - b;
+      m = i - d - b,
+      [tab, setTab] = y(() => (c.length ? "new" : l.length ? "progress" : "open")),
+      openStatus = (s) => {
+        try {
+          sessionStorage.setItem(__projectsFilterKey, s);
+        } catch (z) {}
+        o();
+      },
+      total = e.length,
+      pct = (n) => (total ? Math.round((n / total) * 100) : 0),
+      settledPct = done.length ? Math.round((doneSettled.length / done.length) * 100) : 0,
+      tabs = [
+        { key: "new", label: "جديدة", list: c, status: S_NEW },
+        { key: "progress", label: "قيد التنفيذ", list: l, status: S_PROG },
+        { key: "open", label: "مكتملة غير خالصة", list: doneOpen, status: S_DONE },
+        { key: "settled", label: "مكتملة خالصة", list: doneSettled, status: S_DONE },
+      ],
+      activeTab = tabs.find((x) => x.key === tab) || tabs[0],
+      today = (() => {
+        try {
+          return new Date().toLocaleDateString("ar-LY", {
+            weekday: "long",
+            day: "numeric",
+            month: "long",
+            year: "numeric",
+            timeZone: Ee,
+          });
+        } catch (z) {
+          return "";
+        }
+      })(),
+      panel = (extra, ...kids) =>
+        React.createElement(
+          "div",
+          Object.assign(
+            {
+              className: "ui-card dash-anim rounded-2xl border p-4",
+              style: { background: "var(--card-bg)", borderColor: "var(--card-border)" },
+            },
+            extra || {},
+            extra && extra.className ? { className: "ui-card dash-anim rounded-2xl border p-4 " + extra.className } : {},
+          ),
+          ...kids,
+        ),
+      segments = [
+        { key: "new", label: S_NEW, count: c.length },
+        { key: "progress", label: S_PROG, count: l.length },
+        { key: "complete", label: S_DONE, count: done.length },
+      ];
     return React.createElement(
       "div",
-      { className: "flex flex-col gap-6" },
+      { className: "dashboard-view flex flex-col gap-6" },
       React.createElement(
         "div",
-        null,
+        { className: "dash-hero dash-anim" },
         React.createElement(
-          "h1",
-          {
-            className: "text-xl font-bold",
-            style: {
-              fontFamily: "'El Messiri', sans-serif",
-              color: "var(--text-strong)",
+          "div",
+          null,
+          React.createElement(
+            "h1",
+            {
+              className: "text-xl font-bold",
+              style: {
+                fontFamily: "'El Messiri', sans-serif",
+                color: "var(--text-strong)",
+              },
             },
-          },
-          "\u0644\u0648\u062D\u0629 \u0627\u0644\u062A\u062D\u0643\u0645",
+            "لوحة التحكم",
+          ),
+          React.createElement(
+            "p",
+            {
+              className: "text-sm mt-0.5",
+              style: { color: "var(--text-muted)" },
+            },
+            "نظرة عامة على المصنع اليوم",
+            today ? " \xB7 " + today : "",
+          ),
         ),
         React.createElement(
-          "p",
-          {
-            className: "text-sm mt-0.5",
-            style: { color: "var(--text-muted)" },
-          },
-          "\u0646\u0638\u0631\u0629 \u0639\u0627\u0645\u0629 \u0639\u0644\u0649 \u0627\u0644\u0645\u0635\u0646\u0639 \u0627\u0644\u064A\u0648\u0645",
+          "div",
+          { className: "dash-quick" },
+          React.createElement(
+            "button",
+            { type: "button", className: "dash-chip", onClick: o },
+            React.createElement(D, { name: "factory", size: 14 }),
+            " المشاريع",
+          ),
+          gi &&
+            React.createElement(
+              "button",
+              { type: "button", className: "dash-chip", onClick: gi },
+              React.createElement(D, { name: "package", size: 14 }),
+              " المخزون",
+            ),
+          React.createElement(
+            "button",
+            { type: "button", className: "dash-chip", onClick: w },
+            React.createElement(D, { name: "barChart", size: 14 }),
+            " التقارير",
+          ),
         ),
       ),
       React.createElement(
         "div",
-        { className: "grid grid-cols-2 lg:grid-cols-4 gap-3" },
+        { className: "dash-anim grid grid-cols-2 lg:grid-cols-4 gap-3" },
         React.createElement(te, {
           icon: "hammer",
           label:
-            "\u0645\u0634\u0627\u0631\u064A\u0639 \u062C\u0627\u0631\u064A\u0629",
+            "مشاريع جارية",
           value: l.length,
-          accent: "var(--success)",
-          onClick: o,
+          accent: "var(--progress-fg)",
+          onClick: () => openStatus(S_PROG),
         }),
         React.createElement(te, {
           icon: "circleDot",
           label:
-            "\u0645\u0634\u0627\u0631\u064A\u0639 \u0642\u0627\u062F\u0645\u0629",
+            "مشاريع قادمة",
           value: c.length,
-          accent: "var(--warning)",
-          onClick: o,
+          accent: "var(--new-fg)",
+          onClick: () => openStatus(S_NEW),
         }),
         React.createElement(te, {
           icon: "alert",
           label:
-            "\u0645\u0648\u0627\u062F \u0646\u0627\u0642\u0635\u0629 \u0628\u0627\u0644\u0645\u062E\u0632\u0648\u0646",
+            "مواد ناقصة بالمخزون",
           value: t.length,
           accent: "var(--danger)",
+          onClick: gi,
         }),
         React.createElement(te, {
           icon: m >= 0 ? "trendUp" : "trendDown",
           label:
-            "\u0635\u0627\u0641\u064A \u0627\u0644\u062D\u0631\u0643\u0629 \u0627\u0644\u0646\u0642\u062F\u064A\u0629",
+            "صافي الحركة النقدية",
           value: N(m),
-          sub: "\u0648\u0627\u0631\u062F\u0627\u062A \u2212 \u0645\u0635\u0627\u0631\u064A\u0641 \u2212 \u0641\u0648\u0627\u062A\u064A\u0631 \u0645\u062F\u0641\u0648\u0639\u0629",
+          sub: "واردات − مصاريف − فواتير مدفوعة",
           accent: m >= 0 ? "var(--success)" : "var(--danger)",
           onClick: w,
         }),
@@ -2839,36 +2970,239 @@
       React.createElement(
         "div",
         { className: "grid grid-cols-1 lg:grid-cols-3 gap-3" },
+        panel(
+          { className: "lg:col-span-2" },
+          React.createElement(
+            "div",
+            { className: "flex items-center justify-between mb-3" },
+            React.createElement(
+              "h3",
+              { className: "font-semibold text-sm", style: { color: "var(--text-body)" } },
+              "حالة المشاريع",
+            ),
+            React.createElement(
+              "span",
+              { className: "text-xs", style: { color: "var(--text-muted)" } },
+              total,
+              " مشروع",
+            ),
+          ),
+          React.createElement(
+            "div",
+            {
+              className: "status-bar",
+              role: "img",
+              "aria-label": segments.map((s) => s.label + " " + s.count).join("، "),
+            },
+            total === 0
+              ? React.createElement("span", { className: "status-bar-empty" })
+              : segments
+                  .filter((s) => s.count > 0)
+                  .map((s) =>
+                    React.createElement("span", {
+                      key: s.key,
+                      className: "status-bar-seg seg-" + s.key,
+                      style: { width: pct(s.count) + "%" },
+                      title: s.label + ": " + s.count,
+                    }),
+                  ),
+          ),
+          React.createElement(
+            "div",
+            { className: "status-legend" },
+            segments.map((s) =>
+              React.createElement(
+                "button",
+                {
+                  key: s.key,
+                  type: "button",
+                  className: "status-legend-item legend-" + s.key,
+                  onClick: () => openStatus(s.label),
+                  title: "عرض المشاريع: " + s.label,
+                },
+                React.createElement("span", { className: "status-dot", "aria-hidden": "true" }),
+                React.createElement("span", { className: "legend-label" }, s.label),
+                React.createElement("strong", { className: "legend-count" }, s.count),
+                React.createElement("span", { className: "legend-pct" }, pct(s.count), "%"),
+              ),
+            ),
+          ),
+          React.createElement(
+            "div",
+            { className: "settle-summary" },
+            React.createElement(
+              "div",
+              { className: "settle-summary-row" },
+              React.createElement(
+                "span",
+                null,
+                "المشاريع المكتملة الخالصة",
+              ),
+              React.createElement(
+                "span",
+                { className: "settle-summary-nums" },
+                React.createElement("span", { className: "settle-mark is-settled compact" }, React.createElement("span", { className: "settle-icon" }, "✓")),
+                " ",
+                doneSettled.length,
+                "  ",
+                React.createElement("span", { className: "settle-mark is-unsettled compact" }, React.createElement("span", { className: "settle-icon" }, "✗")),
+                " ",
+                doneOpen.length,
+              ),
+            ),
+            React.createElement(
+              "div",
+              { className: "settle-meter" },
+              React.createElement("span", { style: { width: settledPct + "%" } }),
+            ),
+          ),
+        ),
         React.createElement(te, {
           icon: "users",
           label:
-            "\u0645\u0633\u062A\u062D\u0642\u0627\u062A \u0639\u0644\u0649 \u0627\u0644\u0639\u0645\u0644\u0627\u0621",
+            "مستحقات على العملاء",
           value: N(r),
+          sub: doneOpen.length
+            ? doneOpen.length + " مشروع مكتمل غير خالص"
+            : "كل المشاريع المكتملة خالصة",
           accent: "#7c3aed",
           onClick: w,
         }),
+      ),
+      panel(
+        null,
         React.createElement(
           "div",
-          {
-            className: "rounded-2xl border p-4 lg:col-span-2",
-            style: {
-              background: "var(--card-bg)",
-              borderColor: "var(--card-border)",
-            },
-          },
+          { className: "flex items-center justify-between flex-wrap gap-2 mb-3" },
           React.createElement(
-            "h3",
+            "div",
+            { className: "dash-tabs", role: "tablist" },
+            tabs.map((x) =>
+              React.createElement(
+                "button",
+                {
+                  key: x.key,
+                  type: "button",
+                  role: "tab",
+                  "aria-selected": x.key === activeTab.key,
+                  className: "dash-tab tab-" + x.key + (x.key === activeTab.key ? " active" : ""),
+                  onClick: () => setTab(x.key),
+                },
+                x.label,
+                React.createElement("span", { className: "dash-tab-count" }, x.list.length),
+              ),
+            ),
+          ),
+          React.createElement(
+            "button",
             {
-              className: "font-semibold text-sm mb-3",
-              style: { color: "var(--text-body)" },
+              type: "button",
+              onClick: () => openStatus(activeTab.status),
+              className: "text-xs flex items-center gap-1",
+              style: { color: "var(--accent)" },
             },
-            "\u062A\u0646\u0628\u064A\u0647\u0627\u062A \u0627\u0644\u0645\u062E\u0632\u0648\u0646",
+            "عرض الكل ",
+            React.createElement(D, { name: "arrowRight", size: 12 }),
+          ),
+        ),
+        activeTab.list.length === 0
+          ? React.createElement(ae, {
+              icon: activeTab.key === "settled" || activeTab.key === "open" ? "check" : "circleDot",
+              title:
+                "لا توجد مشاريع في هذا القسم",
+              sub:
+                activeTab.key === "new"
+                  ? "أضف مشروعًا عند اتصال زبون"
+                  : void 0,
+            })
+          : React.createElement(
+              "div",
+              { className: "grid sm:grid-cols-2 gap-2", key: activeTab.key },
+              activeTab.list.slice(0, 6).map((u) => {
+                const s = summaries.get(u.id);
+                return React.createElement(
+                  "button",
+                  {
+                    key: u.id,
+                    type: "button",
+                    onClick: () => v(u.id),
+                    className:
+                      "dash-row status-edge-" + __statusKey(u.status) + " flex items-center justify-between gap-2 rounded-xl border px-3 py-2.5 text-right",
+                    style: { borderColor: "var(--divider)" },
+                  },
+                  React.createElement(
+                    "div",
+                    { className: "min-w-0" },
+                    React.createElement(
+                      "div",
+                      {
+                        className: "text-sm font-medium truncate",
+                        style: { color: "var(--text-strong)" },
+                      },
+                      u.customerName,
+                    ),
+                    React.createElement(
+                      "div",
+                      {
+                        className: "text-xs flex items-center gap-1 mt-0.5",
+                        style: { color: "var(--text-muted)" },
+                      },
+                      React.createElement(D, { name: "mappin", size: 11 }),
+                      " ",
+                      u.location ||
+                        "بدون موقع",
+                      u.productType ? " \xB7 " + u.productType : "",
+                    ),
+                  ),
+                  React.createElement(
+                    "div",
+                    { className: "flex items-center gap-1.5 shrink-0" },
+                    s && s.completed && s.remaining > 0 &&
+                      React.createElement(
+                        "span",
+                        { className: "text-xs font-semibold", style: { color: "var(--danger)" } },
+                        N(s.remaining),
+                      ),
+                    s && s.completed
+                      ? React.createElement(SettleMark, { summary: s })
+                      : React.createElement(StatusPill, { status: u.status }),
+                  ),
+                );
+              }),
+            ),
+      ),
+      React.createElement(
+        "div",
+        { className: "grid grid-cols-1 lg:grid-cols-2 gap-3" },
+        panel(
+          null,
+          React.createElement(
+            "div",
+            { className: "flex items-center justify-between mb-3" },
+            React.createElement(
+              "h3",
+              { className: "font-semibold text-sm", style: { color: "var(--text-body)" } },
+              "تنبيهات المخزون",
+            ),
+            gi &&
+              t.length > 0 &&
+              React.createElement(
+                "button",
+                {
+                  type: "button",
+                  onClick: gi,
+                  className: "text-xs flex items-center gap-1",
+                  style: { color: "var(--accent)" },
+                },
+                "فتح المخزون ",
+                React.createElement(D, { name: "arrowRight", size: 12 }),
+              ),
           ),
           t.length === 0
             ? React.createElement(ae, {
                 icon: "package",
                 title:
-                  "\u0627\u0644\u0645\u062E\u0632\u0648\u0646 \u0636\u0645\u0646 \u0627\u0644\u062D\u062F \u0627\u0644\u0637\u0628\u064A\u0639\u064A",
+                  "المخزون ضمن الحد الطبيعي",
               })
             : React.createElement(
                 "div",
@@ -2879,7 +3213,7 @@
                     {
                       key: u.id,
                       className:
-                        "flex items-center justify-between rounded-xl px-3 py-2.5",
+                        "dash-row flex items-center justify-between rounded-xl px-3 py-2.5",
                       style: { background: "var(--warn-bg)" },
                     },
                     React.createElement(
@@ -2899,172 +3233,91 @@
                       N(u.quantity),
                       " ",
                       u.unit,
-                      " \u0645\u062A\u0628\u0642\u064D",
+                      " متبقٍ",
                     ),
                   ),
                 ),
               ),
         ),
-      ),
-      React.createElement(
-        "div",
-        {
-          className: "rounded-2xl border p-4",
-          style: {
-            background: "var(--card-bg)",
-            borderColor: "var(--card-border)",
-          },
-        },
-        React.createElement(
-          "div",
-          { className: "flex items-center justify-between mb-3" },
+        panel(
+          null,
           React.createElement(
             "h3",
             {
-              className: "font-semibold text-sm",
+              className: "font-semibold text-sm mb-3",
               style: { color: "var(--text-body)" },
             },
-            "\u0645\u0634\u0627\u0631\u064A\u0639 \u0642\u0627\u062F\u0645\u0629 (\u062C\u062F\u064A\u062F\u0629)",
+            "أحدث الفواتير",
           ),
-          React.createElement(
-            "button",
-            {
-              onClick: o,
-              className: "text-xs flex items-center gap-1",
-              style: { color: "var(--accent)" },
-            },
-            "\u0639\u0631\u0636 \u0627\u0644\u0643\u0644 ",
-            React.createElement(D, { name: "arrowRight", size: 12 }),
-          ),
-        ),
-        c.length === 0
-          ? React.createElement(ae, {
-              icon: "circleDot",
-              title:
-                "\u0644\u0627 \u062A\u0648\u062C\u062F \u0645\u0634\u0627\u0631\u064A\u0639 \u062C\u062F\u064A\u062F\u0629",
-              sub: "\u0623\u0636\u0641 \u0645\u0634\u0631\u0648\u0639\u064B\u0627 \u0639\u0646\u062F \u0627\u062A\u0635\u0627\u0644 \u0632\u0628\u0648\u0646",
-            })
-          : React.createElement(
-              "div",
-              { className: "grid sm:grid-cols-2 gap-2" },
-              c.slice(0, 6).map((u) =>
-                React.createElement(
-                  "button",
-                  {
-                    key: u.id,
-                    onClick: () => v(u.id),
-                    className:
-                      "flex items-center justify-between rounded-xl border px-3 py-2.5 text-right transition",
-                    style: { borderColor: "var(--divider)" },
-                  },
-                  React.createElement(
-                    "div",
-                    null,
-                    React.createElement(
-                      "div",
-                      {
-                        className: "text-sm font-medium",
-                        style: { color: "var(--text-strong)" },
-                      },
-                      u.customerName,
-                    ),
-                    React.createElement(
-                      "div",
-                      {
-                        className: "text-xs flex items-center gap-1 mt-0.5",
-                        style: { color: "var(--text-muted)" },
-                      },
-                      React.createElement(D, { name: "mappin", size: 11 }),
-                      " ",
-                      u.location ||
-                        "\u0628\u062F\u0648\u0646 \u0645\u0648\u0642\u0639",
-                    ),
-                  ),
-                  React.createElement(
-                    se,
-                    { bg: je(u.status).bg, fg: je(u.status).fg },
-                    u.productType,
-                  ),
-                ),
-              ),
-            ),
-      ),
-      React.createElement(
-        "div",
-        {
-          className: "rounded-2xl border p-4",
-          style: {
-            background: "var(--card-bg)",
-            borderColor: "var(--card-border)",
-          },
-        },
-        React.createElement(
-          "h3",
-          {
-            className: "font-semibold text-sm mb-3",
-            style: { color: "var(--text-body)" },
-          },
-          "\u0623\u062D\u062F\u062B \u0627\u0644\u0641\u0648\u0627\u062A\u064A\u0631",
-        ),
-        p.length === 0
-          ? React.createElement(ae, {
-              icon: "receipt",
-              title:
-                "\u0644\u0627 \u062A\u0648\u062C\u062F \u0641\u0648\u0627\u062A\u064A\u0631 \u0645\u0633\u062C\u0651\u0644\u0629 \u0628\u0639\u062F",
-            })
-          : React.createElement(
-              "div",
-              {
-                className: "flex flex-col divide-y",
-                style: { borderColor: "var(--divider)" },
-              },
-              p.map((u) =>
-                React.createElement(
-                  "div",
-                  {
-                    key: u.id,
-                    className: "flex items-center justify-between py-2.5",
-                    style: { borderColor: "var(--divider)" },
-                  },
-                  React.createElement(
-                    "div",
-                    null,
-                    React.createElement(
-                      "div",
-                      {
-                        className: "text-sm",
-                        style: { color: "var(--text-body)" },
-                      },
-                      u.supplierName || u.type,
-                    ),
-                    React.createElement(
-                      "div",
-                      {
-                        className: "text-xs",
-                        style: { color: "var(--text-muted)" },
-                      },
-                      u.type,
-                      " \xB7 ",
-                      u.date,
-                    ),
-                  ),
+          p.length === 0
+            ? React.createElement(ae, {
+                icon: "receipt",
+                title:
+                  "لا توجد فواتير مسجّلة بعد",
+              })
+            : React.createElement(
+                "div",
+                {
+                  className: "flex flex-col divide-y",
+                  style: { borderColor: "var(--divider)" },
+                },
+                p.map((u) =>
                   React.createElement(
                     "div",
                     {
-                      className: "text-sm font-semibold",
-                      style: { color: "var(--text-strong)" },
+                      key: u.id,
+                      className: "dash-list-row flex items-center justify-between py-2.5",
+                      style: { borderColor: "var(--divider)" },
                     },
-                    N(u.amount),
+                    React.createElement(
+                      "div",
+                      null,
+                      React.createElement(
+                        "div",
+                        {
+                          className: "text-sm",
+                          style: { color: "var(--text-body)" },
+                        },
+                        u.supplierName || u.type,
+                      ),
+                      React.createElement(
+                        "div",
+                        {
+                          className: "text-xs",
+                          style: { color: "var(--text-muted)" },
+                        },
+                        u.type,
+                        " \xB7 ",
+                        u.date,
+                      ),
+                    ),
+                    React.createElement(
+                      "div",
+                      {
+                        className: "text-sm font-semibold",
+                        style: { color: "var(--text-strong)" },
+                      },
+                      N(u.amount),
+                    ),
                   ),
                 ),
               ),
-            ),
+        ),
       ),
     );
   }
-  function Bt({ projects: e, onOpen: a, onNew: t }) {
+  function Bt({ projects: e, income: inc = [], onOpen: a, onNew: t }) {
     const [r, i] = y(""),
-      [d, b] = y("\u0627\u0644\u0643\u0644"),
+      [d, b] = y(() => {
+        try {
+          const s = sessionStorage.getItem(__projectsFilterKey);
+          if (s) {
+            sessionStorage.removeItem(__projectsFilterKey);
+            if (ft.includes(s)) return s;
+          }
+        } catch (z) {}
+        return "\u0627\u0644\u0643\u0644";
+      }),
       v = oe(r),
       o = e.filter((l) => {
         const c = (l.measurements || []).map((w) => w.workerName || ""),
@@ -3176,17 +3429,16 @@
             "div",
             { className: "grid sm:grid-cols-2 lg:grid-cols-3 gap-3" },
             o.map((l) => {
-              const c = (l.measurements || []).reduce(
-                (p, m) => p + Number(m.totalAmount || 0),
-                0,
-              );
+              const sm = FD.projects.projectSummary(l, inc),
+                c = sm.cost;
               return React.createElement(
                 "button",
                 {
                   key: l.id,
+                  type: "button",
                   onClick: () => a(l.id),
                   className:
-                    "text-right rounded-2xl border p-4 hover:shadow-sm transition flex flex-col gap-3",
+                    "project-card status-edge-" + __statusKey(l.status) + (sm.completed ? (sm.settled ? " is-settled" : " is-unsettled") : "") + " text-right rounded-2xl border p-4 flex flex-col gap-3",
                   style: {
                     background: "var(--card-bg)",
                     borderColor: "var(--card-border)",
@@ -3219,10 +3471,10 @@
                     ),
                   ),
                   React.createElement(
-                    se,
-                    { bg: je(l.status).bg, fg: je(l.status).fg },
-                    l.status ||
-                      "\u062D\u0627\u0644\u0629 \u063A\u064A\u0631 \u0645\u0639\u0631\u0648\u0641\u0629",
+                    "div",
+                    { className: "flex flex-col items-end gap-1.5 shrink-0" },
+                    React.createElement(StatusPill, { status: l.status }),
+                    React.createElement(SettleMark, { summary: sm }),
                   ),
                 ),
                 React.createElement(
@@ -3242,6 +3494,13 @@
                     c > 0
                       ? N(c) + " \u0625\u062C\u0645\u0627\u0644\u064A"
                       : l.dateCreated,
+                    sm.completed && sm.remaining > 0
+                      ? React.createElement(
+                          "span",
+                          { className: "card-remaining" },
+                          " \xB7 \u0628\u0627\u0642\u064A " + N(sm.remaining),
+                        )
+                      : null,
                   ),
                 ),
               );
@@ -8087,11 +8346,8 @@
                       React.createElement(
                         "div",
                         { className: "flex items-center gap-2" },
-                        React.createElement(
-                          se,
-                          { bg: je(_.status).bg, fg: je(_.status).fg },
-                          _.status,
-                        ),
+                        React.createElement(StatusPill, { status: _.status }),
+                        React.createElement(SettleMark, { summary: z, compact: !0 }),
                         React.createElement(
                           "span",
                           {
