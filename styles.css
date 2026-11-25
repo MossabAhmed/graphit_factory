@@ -1296,3 +1296,78 @@ textarea {
 .dash-list-row:hover { padding-inline-start: 6px; }
 @media (max-width: 480px) { .status-legend { grid-template-columns: minmax(0,1fr); } }
 @media (prefers-reduced-motion: reduce) { .dash-anim, .dash-row, .status-progress .status-dot { animation: none; } }
+
+/* ===== ظهور تدريجي موحّد لكل الأقسام (نفس تقنية لوحة التحكم: CSS فقط، بلا مؤقتات ولا تأخير حقيقي) ===== */
+@keyframes tab-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+.tab-view > * > * { animation: tab-in 380ms cubic-bezier(0.2, 0.7, 0.2, 1) backwards; }
+.tab-view > * > *:nth-child(2) { animation-delay: 60ms; }
+.tab-view > * > *:nth-child(3) { animation-delay: 120ms; }
+.tab-view > * > *:nth-child(4) { animation-delay: 180ms; }
+.tab-view > * > *:nth-child(5) { animation-delay: 240ms; }
+.tab-view > * > *:nth-child(n + 6) { animation-delay: 300ms; }
+/* بطاقات الشبكات وصفوف القوائم تظهر تباعًا بعد العناوين */
+.tab-view .grid > *, .tab-view .divide-y > * { animation: tab-in 320ms cubic-bezier(0.2, 0.7, 0.2, 1) backwards; animation-delay: 140ms; }
+.tab-view .grid > *:nth-child(2), .tab-view .divide-y > *:nth-child(2) { animation-delay: 180ms; }
+.tab-view .grid > *:nth-child(3), .tab-view .divide-y > *:nth-child(3) { animation-delay: 220ms; }
+.tab-view .grid > *:nth-child(4), .tab-view .divide-y > *:nth-child(4) { animation-delay: 260ms; }
+.tab-view .grid > *:nth-child(5), .tab-view .divide-y > *:nth-child(5) { animation-delay: 300ms; }
+.tab-view .grid > *:nth-child(6), .tab-view .divide-y > *:nth-child(6) { animation-delay: 340ms; }
+.tab-view .grid > *:nth-child(7), .tab-view .divide-y > *:nth-child(7) { animation-delay: 380ms; }
+.tab-view .grid > *:nth-child(8), .tab-view .divide-y > *:nth-child(8) { animation-delay: 420ms; }
+.tab-view .grid > *:nth-child(9), .tab-view .divide-y > *:nth-child(9) { animation-delay: 460ms; }
+.tab-view .grid > *:nth-child(10), .tab-view .divide-y > *:nth-child(10) { animation-delay: 500ms; }
+.tab-view .grid > *:nth-child(n + 11), .tab-view .divide-y > *:nth-child(n + 11) { animation-delay: 540ms; }
+@media (prefers-reduced-motion: reduce) { .tab-view *, .tab-view *::before, .tab-view *::after { animation: none !important; } }
+
+/* ===== ألوان الموردين في الفواتير: لكل مورد لون شريط خاص به ===== */
+:root {
+  --sup-0: #2563eb; --sup-1: #db2777; --sup-2: #059669; --sup-3: #d97706; --sup-4: #7c3aed; --sup-5: #dc2626; --sup-6: #0891b2; --sup-7: #65a30d;
+  --sup-8: #c2410c; --sup-9: #4f46e5; --sup-10: #0d9488; --sup-11: #a21caf; --sup-12: #ca8a04; --sup-13: #475569; --sup-14: #be123c; --sup-15: #15803d;
+}
+:root[data-theme="dark"] {
+  --sup-0: #60a5fa; --sup-1: #f472b6; --sup-2: #34d399; --sup-3: #fbbf24; --sup-4: #a78bfa; --sup-5: #f87171; --sup-6: #22d3ee; --sup-7: #a3e635;
+  --sup-8: #fb923c; --sup-9: #818cf8; --sup-10: #2dd4bf; --sup-11: #e879f9; --sup-12: #facc15; --sup-13: #94a3b8; --sup-14: #fb7185; --sup-15: #4ade80;
+}
+/* !important لأن صفوف القائمة تحمل borderColor مباشرة في الكود فيتغلب على لون الشريط */
+.sup-row { border-inline-start: 5px solid var(--sup, var(--divider)) !important; transition: background 160ms ease; }
+.sup-row:hover { background: color-mix(in srgb, var(--sup, transparent) 7%, transparent); }
+.sup-dot { flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--sup, var(--divider)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--sup, transparent) 22%, transparent); }
+.sup-row .sup-dot { background: var(--sup); }
+.sup-legend { display: flex; flex-wrap: wrap; gap: 6px; }
+.sup-chip {
+  display: inline-flex; align-items: center; gap: 7px; padding: 5px 12px; border-radius: 999px;
+  font-size: 12px; color: var(--text-body); border: 1px solid var(--card-border); background: var(--card-bg);
+  transition: transform 160ms ease, background 160ms ease, border-color 160ms ease;
+}
+.sup-chip > i { width: 9px; height: 9px; border-radius: 50%; background: var(--sup); }
+.sup-chip:hover { transform: translateY(-1px); border-color: var(--sup); }
+.sup-chip.is-active { color: var(--text-strong); font-weight: 700; border-color: var(--sup); background: color-mix(in srgb, var(--sup) 14%, var(--card-bg)); }
+
+/* ===== السداد العام: اختيار المشاريع ومعاينة التوزيع ===== */
+.gp-block { display: flex; flex-direction: column; gap: 8px; padding: 10px; border-radius: 12px; background: var(--bg); border: 1px dashed var(--card-border); }
+.gp-title { font-size: 12.5px; font-weight: 700; color: var(--text-body); }
+.gp-title small { font-weight: 400; color: var(--text-muted); }
+.gp-empty { font-size: 12px; color: var(--text-muted); padding: 4px 2px; }
+.gp-list { display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto; }
+.gp-option {
+  display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; border-radius: 10px; text-align: start;
+  border: 1px solid var(--card-border); background: var(--card-bg); color: var(--text-body); transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
+}
+.gp-option:hover { transform: translateX(-2px); border-color: var(--accent); }
+.gp-option.is-selected { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--card-bg)); }
+.gp-order { flex: none; width: 24px; height: 24px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 800; color: #fff; border: 2px solid var(--card-border); }
+.gp-option.is-selected .gp-order { background: var(--accent); border-color: var(--accent); }
+.gp-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.gp-main b { font-size: 13px; color: var(--text-strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gp-main small { font-size: 11px; color: var(--text-muted); }
+.gp-amount { display: flex; flex-direction: column; align-items: flex-end; font-size: 11.5px; color: var(--st-bad, var(--danger)); font-weight: 700; font-variant-numeric: tabular-nums; }
+.gp-amount em { font-style: normal; font-size: 13px; color: var(--success); }
+.gp-preview { display: flex; flex-direction: column; gap: 5px; padding: 10px; border-radius: 10px; background: color-mix(in srgb, var(--success) 10%, var(--card-bg)); border: 1px solid color-mix(in srgb, var(--success) 30%, var(--card-border)); }
+.gp-preview-title { font-size: 12px; font-weight: 800; color: var(--text-strong); }
+.gp-line { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-body); }
+.gp-line > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gp-line b { font-variant-numeric: tabular-nums; color: var(--text-strong); }
+.gp-line small { min-width: 92px; text-align: end; color: var(--text-muted); }
+.gp-line small.is-good { color: var(--success); font-weight: 700; }
+.gp-line.is-credit { padding-top: 5px; border-top: 1px dashed var(--card-border); }
+.gp-line.is-credit b, .gp-line.is-credit span { color: var(--success); }

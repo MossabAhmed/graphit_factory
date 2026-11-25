@@ -7,7 +7,7 @@
   }
 })(typeof globalThis !== "undefined" ? globalThis : window, function (money) {
   "use strict";
-  const { normalizeName } = money;
+  const { normalizeName, round3 } = money;
 
   /** تكلفة المشروع = مجموع المكاييل. */
   const projectCost = (project) =>
@@ -136,7 +136,95 @@
     };
   };
 
+
+  /** المشاريع التي يمكن توزيع السداد العام عليها: المكتملة وعليها باقٍ (بعد التغاضي والدفعات). */
+  const payableProjects = (customer, projects, income = []) =>
+    customerProjects(customer, projects)
+      .map((project) => ({ project, summary: projectSummary(project, income) }))
+      .filter(({ project, summary }) => project.status === "مكتمل" && summary.remaining > 0);
+
+  /**
+   * توزيع سداد عام على مشاريع بترتيب اختيارها: كل مشروع يأخذ باقيه ثم ينتقل الباقي للتالي.
+   * ما يزيد بعد تغطية المشاريع المختارة (أو كل المبلغ إن لم يُختر شيء) يعود في surplus ليُضاف لرصيد العميل.
+   * المشاريع غير المكتملة أو التي لا باقي عليها تُتجاهل.
+   */
+  const allocateGeneralPayment = ({ amount, projectIds = [], projects = [], income = [] }) => {
+    const total = round3(amount);
+    let left = total;
+    const parts = [];
+    const seen = new Set();
+    projectIds.forEach((id) => {
+      if (seen.has(id)) return;
+      seen.add(id);
+      const project = projects.find((p) => p.id === id);
+      if (!project || project.status !== "مكتمل" || left <= 0) return;
+      const remaining = round3(projectSummary(project, income).remaining);
+      if (remaining <= 0) return;
+      const part = Math.min(left, remaining);
+      parts.push({ projectId: id, amount: part, remaining, covers: part >= remaining });
+      left = round3(left - part);
+    });
+    return { parts, surplus: left, total };
+  };
+
+  /**
+   * سجلات الحفظ لسداد عام موزّع: كل جزء دفعة عادية على مشروعه (داخل المشروع وفي income، بتاريخه)،
+   * والزيادة وارد عام للعميل بلا مشروع. newId تُحقن لتبقى الدالة نقية وقابلة للاختبار.
+   */
+  const buildGeneralPayment = ({ customer, amount, date, note, projectIds = [], projects = [], income = [], newId }) => {
+    const alloc = allocateGeneralPayment({ amount, projectIds, projects: customerProjects(customer, projects), income });
+    const label = String(note || "").trim() || "سداد عام من العميل";
+    const batchId = newId();
+    const upserts = [];
+    alloc.parts.forEach((part) => {
+      const project = projects.find((p) => p.id === part.projectId);
+      const id = newId();
+      const description = label + " (جزء من سداد عام)";
+      const payment = { id, date, amount: part.amount, includeInIncome: true, description };
+      upserts.push({ collection: "projects", record: { ...project, payments: [payment, ...(project.payments || [])] } });
+      upserts.push({
+        collection: "income",
+        record: { id, paymentId: id, projectId: project.id, date, customerName: project.customerName, amount: part.amount, includeInIncome: true, description, batchId },
+      });
+    });
+    if (alloc.surplus > 0) {
+      upserts.push({
+        collection: "income",
+        record: {
+          id: newId(), projectId: null, customerId: customer.id, customerName: customer.name, paymentScope: "customer",
+          amount: alloc.surplus, date, includeInIncome: true, batchId,
+          description: alloc.parts.length ? label + " (زيادة أُضيفت لرصيد العميل)" : label,
+        },
+      });
+    }
+    return { ...alloc, upserts };
+  };
+
+  const FILTER_ALL = "الكل";
+  const FILTER_SETTLED = "مكتمل خالص";
+  const FILTER_OPEN = "مكتمل غير خالص";
+
+  /**
+   * هل يطابق المشروع فلتر صفحة المشاريع؟
+   * - الحالات العادية (جديد / قيد التنفيذ / مكتمل) تطابق حقل status.
+   * - «مكتمل خالص» = projectSummary.settled، و«مكتمل غير خالص» = مكتمل وغير خالص.
+   * لوحة التحكم تستخدم هذه الدالة نفسها، فلا يختلف تعريف «خالص» بين الشاشتين.
+   */
+  const matchesProjectFilter = (project, filter, income = []) => {
+    if (!filter || filter === FILTER_ALL) return true;
+    if (filter === FILTER_SETTLED) return projectSummary(project, income).settled;
+    if (filter === FILTER_OPEN) return project.status === "مكتمل" && !projectSummary(project, income).settled;
+    return project.status === filter;
+  };
+
   return {
+    FILTER_ALL,
+    FILTER_SETTLED,
+    FILTER_OPEN,
+    matchesProjectFilter,
+    payableProjects,
+    allocateGeneralPayment,
+    buildGeneralPayment,
     projectCost,
     projectPayments,
     projectSummary,

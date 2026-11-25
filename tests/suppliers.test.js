@@ -40,3 +40,33 @@ assert.equal(S.paidInvoicesForMonth(mixed, sup, "2026-03"), 189);
 assert.equal(S.paidInvoicesForMonth([], [], "2026-01"), 0);
 
 console.log("suppliers tests: ok");
+
+// --- لون المورد: مختلف لكل مورد وثابت ---
+{
+  const inv2 = (name, date) => ({ id: name + date, supplierName: name, date, amount: 10 });
+  const invoicesC = [inv2("شركة الأمان", "2026-01-10"), inv2("مصنع الصفا", "2026-01-12"), inv2("شركة الأمان", "2026-02-01"),
+    inv2("مؤسسة النور", "2026-02-03"), inv2("كهرباء", ""), { id: "x", supplierName: "", date: "2026-03-01" }];
+  const map = S.supplierColorMap(invoicesC);
+  const idx = (n, m = map) => S.supplierColorIndex(n, m);
+
+  // ألوان مختلفة تمامًا لكل مورد
+  const names = ["شركة الأمان", "مصنع الصفا", "مؤسسة النور", "كهرباء"];
+  assert.equal(new Set(names.map((n) => idx(n))).size, 4);
+  // الترتيب بأول ظهور: الأقدم 0 ثم 1 ثم 2 (الفاتورة بلا تاريخ تُعدّ الأولى)
+  assert.deepEqual(["كهرباء", "شركة الأمان", "مصنع الصفا", "مؤسسة النور"].map((n) => idx(n)), [0, 1, 2, 3]);
+  // التطبيع: المسافات والتكرار لا يغيّر اللون، والاسم الفارغ محايد
+  assert.equal(idx("  شركة   الأمان "), idx("شركة الأمان"));
+  assert.equal(idx(""), -1);
+  assert.equal(idx(undefined), -1);
+  assert.equal(idx("غير موجود"), -1);
+  // مورد جديد أحدث لا يغيّر ألوان القدامى
+  const map2 = S.supplierColorMap([...invoicesC, inv2("مورد جديد", "2026-04-01")]);
+  names.forEach((n) => assert.equal(idx(n, map2), idx(n)));
+  assert.equal(idx("مورد جديد", map2), 4);
+  // 16 مورد بألوان مختلفة، وما بعدها يدور
+  const many = Array.from({ length: 17 }, (_, i) => inv2("مورد" + i, "2026-01-" + String(i + 1).padStart(2, "0")));
+  const mm = S.supplierColorMap(many);
+  assert.equal(new Set(many.slice(0, 16).map((x) => idx(x.supplierName, mm))).size, 16);
+  assert.equal(idx("مورد16", mm), 0);
+}
+console.log("supplier colour tests: ok");

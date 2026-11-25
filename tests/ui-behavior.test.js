@@ -72,7 +72,8 @@ assert.equal(bodyBg.style.overflow, "");
 // ربط الأرقام والترحيل داخل التطبيق
 assert.ok(app.includes("nextInvoiceSerial(x)"), "مشروع جديد يأخذ رقمًا تسلسليًا");
 assert.ok(app.includes("assignMissingSerials(x)"), "المشاريع القديمة تُرقَّم مرة واحدة");
-assert.ok(app.includes('paymentScope: "customer"'), "السداد العام للعميل مسجّل بنوعه");
+assert.ok(app.includes("FD.projects.buildGeneralPayment("), "السداد العام يُبنى من وحدة الحسابات");
+assert.ok(app.includes("__applyBatch({ upserts: out.upserts })"), "يُحفظ كل التوزيع في عملية واحدة");
 assert.ok(app.includes('__uiStateKey = "factory_ui_state_v1"'), "حالة القسم لها مفتاح تخزين مستقل");
 assert.ok(app.includes("localStorage.setItem(__uiStateKey, JSON.stringify({ section: F, subSection: X }))"), "القسم الحالي محفوظ بعد التحديث");
 assert.ok(app.includes("if (oPrinted || v.closed) return;"), "التقرير السنوي لا يطبع مرتين");

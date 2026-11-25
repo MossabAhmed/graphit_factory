@@ -761,6 +761,7 @@
     );
   }
   const __projectsFilterKey = "factory_projects_filter";
+  const __projectFilterList = [FD.projects.FILTER_ALL, ...ft, FD.projects.FILTER_SETTLED, FD.projects.FILTER_OPEN];
   function te({ icon: e, label: a, value: t, sub: r, accent: i, onClick: d }) {
     const b = d ? "button" : "div";
     return React.createElement(
@@ -2637,6 +2638,10 @@
                   goReports: () => U("reports"),
                   goInventory: () => U("inventory"),
                 }),
+              F !== "dashboard" &&
+                React.createElement(
+                  "div",
+                  { key: F, className: "tab-view" },
               F === "projects" &&
                 React.createElement(Bt, {
                   projects: x,
@@ -2704,6 +2709,7 @@
                 }),
               F === "personal" &&
                 React.createElement(ra, { data: q, upsert: o, remove: c }),
+                ),
             ),
             Ne &&
               React.createElement(Qt, {
@@ -2822,8 +2828,8 @@
         return map;
       }, [e, inc]),
       done = e.filter((u) => u.status === S_DONE),
-      doneSettled = done.filter((u) => (summaries.get(u.id) || {}).settled),
-      doneOpen = done.filter((u) => !(summaries.get(u.id) || {}).settled),
+      doneSettled = done.filter((u) => FD.projects.matchesProjectFilter(u, FD.projects.FILTER_SETTLED, inc)),
+      doneOpen = done.filter((u) => FD.projects.matchesProjectFilter(u, FD.projects.FILTER_OPEN, inc)),
       p = [...a]
         .sort((u, w) => (w.date || "").localeCompare(u.date || ""))
         .slice(0, 5),
@@ -2841,8 +2847,8 @@
       tabs = [
         { key: "new", label: "جديدة", list: c, status: S_NEW },
         { key: "progress", label: "قيد التنفيذ", list: l, status: S_PROG },
-        { key: "open", label: "مكتملة غير خالصة", list: doneOpen, status: S_DONE },
-        { key: "settled", label: "مكتملة خالصة", list: doneSettled, status: S_DONE },
+        { key: "open", label: "مكتملة غير خالصة", list: doneOpen, status: FD.projects.FILTER_OPEN },
+        { key: "settled", label: "مكتملة خالصة", list: doneSettled, status: FD.projects.FILTER_SETTLED },
       ],
       activeTab = tabs.find((x) => x.key === tab) || tabs[0],
       today = (() => {
@@ -3313,7 +3319,7 @@
           const s = sessionStorage.getItem(__projectsFilterKey);
           if (s) {
             sessionStorage.removeItem(__projectsFilterKey);
-            if (ft.includes(s)) return s;
+            if (__projectFilterList.includes(s)) return s;
           }
         } catch (z) {}
         return "\u0627\u0644\u0643\u0644";
@@ -3323,7 +3329,7 @@
         const c = (l.measurements || []).map((w) => w.workerName || ""),
           p = [l.customerName, l.location, ...c].map(oe),
           m = !v || p.some((w) => w.includes(v)),
-          u = d === "\u0627\u0644\u0643\u0644" || l.status === d;
+          u = FD.projects.matchesProjectFilter(l, d, inc);
         return m && u;
       });
     return React.createElement(
@@ -3393,7 +3399,7 @@
         React.createElement(
           "div",
           { className: "flex gap-1.5 flex-wrap" },
-          ["\u0627\u0644\u0643\u0644", ...ft].map((l) =>
+          __projectFilterList.map((l) =>
             React.createElement(
               "button",
               {
@@ -5665,6 +5671,19 @@
       [$, B] = y(null),
       [S, T] = y(null),
       f = oe(p),
+      __supMap = FD.suppliers.supplierColorMap(e),
+      __supColor = (n) => {
+        const i = FD.suppliers.supplierColorIndex(n, __supMap);
+        return i >= 0 ? "var(--sup-" + i + ")" : "var(--divider)";
+      },
+      __supList = (() => {
+        const seen = new Map();
+        e.forEach((n) => {
+          const k = oe(n.supplierName);
+          if (k && !seen.has(k)) seen.set(k, n.supplierName);
+        });
+        return [...seen.values()].sort((a, b) => FD.suppliers.supplierColorIndex(a, __supMap) - FD.suppliers.supplierColorIndex(b, __supMap));
+      })(),
       O = oe(u),
       C = e.filter((n) => {
         const k = l === "\u0627\u0644\u0643\u0644" || n.type === l,
@@ -5871,6 +5890,26 @@
           ),
         ),
       ),
+      __supList.length > 1 &&
+        React.createElement(
+          "div",
+          { className: "sup-legend", role: "group", "aria-label": "ألوان الموردين" },
+          __supList.map((name) =>
+            React.createElement(
+              "button",
+              {
+                key: name,
+                type: "button",
+                className: "sup-chip" + (oe(name) === f ? " is-active" : ""),
+                style: { "--sup": __supColor(name) },
+                title: "عرض فواتير هذا المورد فقط",
+                onClick: () => m(oe(name) === f ? "" : name),
+              },
+              React.createElement("i", null),
+              name,
+            ),
+          ),
+        ),
       F.length === 0
         ? React.createElement(ae, {
             icon: "receipt",
@@ -5897,7 +5936,7 @@
                 var k, j;
                 return React.createElement(
                   "div",
-                  { key: n.id, style: { borderColor: "var(--divider)" } },
+                  { key: n.id, className: "sup-row", style: { borderColor: "var(--divider)", "--sup": __supColor(n.supplierName) } },
                   React.createElement(
                     "button",
                     {
@@ -5915,6 +5954,7 @@
                             "text-sm font-medium truncate flex items-center gap-1.5",
                           style: { color: "var(--text-body)" },
                         },
+                        React.createElement("span", { className: "sup-dot", "aria-hidden": !0 }),
                         n.supplierName ||
                           "\u0628\u062F\u0648\u0646 \u0627\u0633\u0645 \u0645\u0648\u0631\u0651\u062F",
                         " ",
@@ -6123,7 +6163,6 @@
             initialInvoice: v,
             projects: a,
             suppliers: t,
-            upsert,
             onAdd: X,
           }),
         ),
@@ -7568,6 +7607,7 @@
           existing: i.filter((C) => C.id !== S.id),
           onAddIncome: (rec) => b("income", rec),
           onDeleteIncome: (id) => o("income", id),
+          onApplyBatch: (batch) => v(batch),
         }),
     );
   }
@@ -7656,6 +7696,7 @@
     existing: p = [],
     onAddIncome: __addIncome,
     onDeleteIncome: __delIncome,
+    onApplyBatch: __applyBatch,
   }) {
     const [m, u] = y(e),
       [w, x] = y(!1),
@@ -7671,7 +7712,8 @@
     const [__gpAmt, __setGpAmt] = y(""),
       [__gpDate, __setGpDate] = y(Le()),
       [__gpNote, __setGpNote] = y(""),
-      [__gpDel, __setGpDel] = y(null);
+      [__gpDel, __setGpDel] = y(null),
+      [__gpSel, __setGpSel] = y([]);
     be(() => u(e), [e.id]);
     const M = () => {
         (j.current && clearTimeout(j.current),
@@ -7776,26 +7818,26 @@
             "success",
           ));
       };
+    const __gpEligible = o != null ? FD.projects.payableProjects(m, o, l) : [],
+      __gpSelected = __gpSel.filter((id) => __gpEligible.some((x) => x.project.id === id)),
+      __gpAlloc = H(__gpAmt) ? FD.projects.allocateGeneralPayment({ amount: __gpAmt, projectIds: __gpSelected, projects: o || [], income: l }) : null;
     const __saveGeneralPayment = () => {
       if (!H(__gpAmt)) {
         G("أدخل مبلغ سداد موجبًا.");
         return;
       }
-      __addIncome({
-        id: ne(),
-        projectId: null,
-        customerId: m.id,
-        customerName: m.name,
-        paymentScope: "customer",
-        amount: Number(__gpAmt),
-        date: Be(__gpDate),
-        includeInIncome: !0,
-        description: __gpNote.trim() || "سداد عام من العميل",
-      });
+      const out = FD.projects.buildGeneralPayment({ customer: m, amount: __gpAmt, date: Be(__gpDate), note: __gpNote, projectIds: __gpSelected, projects: o || [], income: l, newId: ne });
+      __applyBatch({ upserts: out.upserts });
       __setGpAmt("");
       __setGpNote("");
       __setGpDate(Le());
-      G("تم تسجيل السداد العام وإضافته إلى الواردات.", "success");
+      __setGpSel([]);
+      G(
+        out.parts.length
+          ? "تم تسجيل السداد العام: وُزّع " + N(out.total - out.surplus) + " على " + out.parts.length + " مشروع" + (out.surplus > 0 ? " وأُضيف " + N(out.surplus) + " لرصيد العميل." : ".")
+          : "تم تسجيل السداد العام وإضافته إلى الواردات.",
+        "success",
+      );
     };
     return React.createElement(
       ce,
@@ -8247,7 +8289,61 @@
                   React.createElement(E, { type: "datetime-local", value: __gpDate, onChange: (ev) => __setGpDate(ev.target.value) }),
                 ),
                 React.createElement(E, { placeholder: "ملاحظة (اختياري)", value: __gpNote, onChange: (ev) => __setGpNote(ev.target.value) }),
-                React.createElement("div", { className: "text-xs", style: { color: "var(--text-muted)" } }, "يُسجَّل كوارد غير مرتبط بمشروع، ويظهر في «المصاريف والواردات» والتقارير، ويُخصم من مستحقات العميل."),
+                React.createElement(
+                  "div",
+                  { className: "gp-block" },
+                  React.createElement("div", { className: "gp-title" }, "توزيع السداد على مشاريع مكتملة", React.createElement("small", null, " (اختياري، بترتيب اختيارك)")),
+                  __gpEligible.length === 0
+                    ? React.createElement("div", { className: "gp-empty" }, "لا توجد مشاريع مكتملة عليها باقٍ، فسيُسجَّل المبلغ كله رصيدًا للعميل.")
+                    : React.createElement(
+                        "div",
+                        { className: "gp-list" },
+                        __gpEligible.map(({ project: pj, summary: sm }) => {
+                          const pos = __gpSelected.indexOf(pj.id);
+                          const part = __gpAlloc && __gpAlloc.parts.find((x) => x.projectId === pj.id);
+                          const no = FD.invoiceNumber.formatInvoiceNumber(pj.invoiceSerial);
+                          return React.createElement(
+                            "button",
+                            {
+                              key: pj.id,
+                              type: "button",
+                              className: "gp-option" + (pos >= 0 ? " is-selected" : ""),
+                              "aria-pressed": pos >= 0,
+                              onClick: () => __setGpSel((prev) => (prev.includes(pj.id) ? prev.filter((x) => x !== pj.id) : [...prev, pj.id])),
+                            },
+                            React.createElement("span", { className: "gp-order" }, pos >= 0 ? pos + 1 : ""),
+                            React.createElement("span", { className: "gp-main" }, React.createElement("b", null, pj.location || pj.customerName), React.createElement("small", null, (no ? "#" + no + " · " : "") + (pj.dateCreated || ""))),
+                            React.createElement("span", { className: "gp-amount" }, part ? React.createElement("em", null, "← " + N(part.amount)) : null, React.createElement("span", null, "باقي " + N(sm.remaining))),
+                          );
+                        }),
+                      ),
+                  __gpAlloc &&
+                    (__gpAlloc.parts.length > 0 || __gpAlloc.surplus > 0) &&
+                    React.createElement(
+                      "div",
+                      { className: "gp-preview" },
+                      React.createElement("div", { className: "gp-preview-title" }, "المعاينة قبل الحفظ"),
+                      __gpAlloc.parts.map((part) => {
+                        const pj = (o || []).find((x) => x.id === part.projectId);
+                        return React.createElement(
+                          "div",
+                          { key: part.projectId, className: "gp-line" },
+                          React.createElement("span", null, (pj && (pj.location || pj.customerName)) || ""),
+                          React.createElement("b", null, "← " + N(part.amount)),
+                          React.createElement("small", { className: part.covers ? "is-good" : "" }, part.covers ? "يغطي الباقي ✓" : "يبقى " + N(part.remaining - part.amount)),
+                        );
+                      }),
+                      __gpAlloc.surplus > 0 &&
+                        React.createElement(
+                          "div",
+                          { className: "gp-line is-credit" },
+                          React.createElement("span", null, "رصيد للعميل"),
+                          React.createElement("b", null, "← " + N(__gpAlloc.surplus)),
+                          React.createElement("small", null, "زيادة تُضاف تلقائيًا"),
+                        ),
+                    ),
+                ),
+                React.createElement("div", { className: "text-xs", style: { color: "var(--text-muted)" } }, "يُسجَّل المبلغ واردًا بتاريخه. ما يُوزَّع على مشاريع يُسجَّل دفعةً عادية على كل مشروع بالتاريخ نفسه، وما يزيد (أو كل المبلغ إن لم تختر مشاريع) يُضاف لرصيد العميل."),
                 React.createElement(K, { onClick: __saveGeneralPayment, full: !0, disabled: !__gpAmt }, React.createElement(D, { name: "plus", size: 16 }), " تسجيل السداد العام"),
               ),
             ze.length > 0 &&

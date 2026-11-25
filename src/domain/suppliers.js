@@ -7,7 +7,7 @@
   }
 })(typeof globalThis !== "undefined" ? globalThis : window, function (money) {
   "use strict";
-  const { isPositive, monthKey } = money;
+  const { isPositive, monthKey, normalizeName } = money;
 
   /** فواتير المورد الآجلة (المرتبطة بقيد دين) مرتبة بالأقدم. */
   const debtInvoices = (supplierId, invoices = []) =>
@@ -97,5 +97,30 @@
     return cashInvoices + supplierPayments;
   };
 
-  return { debtInvoices, supplierStatement, allocatePayment, paidInvoicesForMonth };
+
+  const SUPPLIER_PALETTE_SIZE = 16;
+
+  /**
+   * خريطة ألوان الموردين: كل مورد (حسب اسمه المطبّع) يأخذ رقم لون مختلفًا بترتيب أول ظهور له (أقدم فاتورة)،
+   * فلا يتكرر لون بين موردين حتى 16 موردًا. المورد الجديد (الأحدث) لا يغيّر ألوان القدامى.
+   */
+  const supplierColorMap = (invoices = []) => {
+    const first = new Map();
+    invoices.forEach((inv) => {
+      const key = normalizeName(inv.supplierName);
+      if (!key) return;
+      const date = inv.date || "";
+      if (!first.has(key) || date < first.get(key)) first.set(key, date);
+    });
+    const ordered = [...first.entries()].sort((a, b) => a[1].localeCompare(b[1]) || a[0].localeCompare(b[0]));
+    return new Map(ordered.map(([key], i) => [key, i % SUPPLIER_PALETTE_SIZE]));
+  };
+
+  /** رقم لون المورد من الخريطة، أو -1 (لون محايد) إن لم يكن له اسم. */
+  const supplierColorIndex = (name, map) => {
+    const key = normalizeName(name);
+    return key && map && map.has(key) ? map.get(key) : -1;
+  };
+
+  return { SUPPLIER_PALETTE_SIZE, supplierColorMap, supplierColorIndex, debtInvoices, supplierStatement, allocatePayment, paidInvoicesForMonth };
 });
